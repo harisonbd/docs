@@ -53,7 +53,7 @@
   .bar h1 { font-size: 26px; margin: 6px 2px; }
   .bar .title { flex: 1; min-width: 0; }
   .bar .title b { display: block; font-size: 19px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .bar .title small { color: var(--muted); font-size: 15px; }
+  .bar .title small { display: block; color: var(--muted); font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
   .actions { display: flex; gap: 12px; padding: 14px; }
   .actions button { flex: 1; min-height: 60px; font-size: 19px; }
@@ -84,6 +84,28 @@
     padding: 16px; tab-size: 4;
   }
   #editor[hidden] { display: none; }
+  #reader {
+    flex: 1; overflow-y: auto; background: var(--surface); color: var(--text);
+    font: 18px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding: 16px; tab-size: 4; white-space: pre-wrap; overflow-wrap: anywhere;
+    -webkit-user-select: text; user-select: text; position: relative;
+  }
+  #reader[hidden] { display: none; }
+  mark { background: #ffe066; color: #1c1c1e; border-radius: 3px; }
+  mark.cur { background: #ff9f1c; outline: 2px solid #ff9f1c; }
+
+  #findBar {
+    display: flex; gap: 6px; align-items: center; padding: 8px 10px;
+    border-bottom: 1px solid var(--line); background: var(--bg);
+  }
+  #findBar[hidden] { display: none; }
+  #findInput {
+    flex: 1; min-width: 0; font: inherit; font-size: 17px; height: 48px; padding: 0 12px;
+    border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--text);
+  }
+  #findCount { min-width: 52px; text-align: center; color: var(--muted); font-size: 15px; }
+  #findBar button { min-width: 48px; min-height: 48px; padding: 0; }
+  .hl { position: absolute; z-index: 1; background: rgba(255, 159, 28, .45); outline: 2px solid #ff9f1c; border-radius: 2px; pointer-events: none; }
 
   #pdfWrap { flex: 1; overflow: auto; touch-action: pan-x pan-y; background: var(--bg); }
   #pdfWrap[hidden] { display: none; }
@@ -99,6 +121,7 @@
   }
   .tools[hidden] { display: none; }
   .tools button { flex: 1; padding: 0 6px; font-size: 17px; }
+  .tools button.icon { flex: 0 0 54px; font-size: 22px; }
   .tools .label { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 16px; }
 
   dialog {
@@ -144,15 +167,29 @@
   <header class="bar">
     <button id="backBtn" aria-label="Back to list">← Back</button>
     <div class="title"><b id="docTitle"></b><small id="docState"></small></div>
+    <button id="findBtn" aria-label="Find in document">Find</button>
   </header>
+  <div id="findBar" hidden>
+    <input id="findInput" type="search" placeholder="Find…" enterkeyhint="search" autocomplete="off" aria-label="Text to find">
+    <span id="findCount"></span>
+    <button id="findPrev" aria-label="Previous match">↑</button>
+    <button id="findNext" aria-label="Next match">↓</button>
+    <button id="findClose" aria-label="Close search">✕</button>
+  </div>
   <div id="notice" hidden><span id="noticeText"></span><button id="noticeOk">OK</button></div>
+  <div id="reader" hidden></div>
   <textarea id="editor" hidden autocapitalize="sentences" aria-label="Document text"></textarea>
   <div id="pdfWrap" hidden><div id="pdfPages"></div></div>
+  <footer id="readTools" class="tools" hidden>
+    <button id="editBtn" class="primary">Edit</button>
+    <button id="exportBtn2">Export</button>
+  </footer>
   <footer id="textTools" class="tools" hidden>
-    <button id="undoBtn">Undo</button>
-    <button id="redoBtn">Redo</button>
+    <button id="undoBtn" class="icon" aria-label="Undo">↶</button>
+    <button id="redoBtn" class="icon" aria-label="Redo">↷</button>
     <button id="saveBtn" class="primary">Save</button>
     <button id="exportBtn">Export</button>
+    <button id="doneBtn">Done</button>
   </footer>
   <footer id="pdfTools" class="tools" hidden>
     <button id="zoomOut" aria-label="Zoom out">−</button>
@@ -179,6 +216,8 @@ const els = {
   textTools: $('textTools'), pdfTools: $('pdfTools'), docTitle: $('docTitle'), docState: $('docState'),
   notice: $('notice'), noticeText: $('noticeText'), undoBtn: $('undoBtn'), redoBtn: $('redoBtn'),
   zoomLabel: $('zoomLabel'), pageLabel: $('pageLabel'),
+  reader: $('reader'), readTools: $('readTools'),
+  findBar: $('findBar'), findInput: $('findInput'), findCount: $('findCount'),
 };
 
 /* ---------- Storage (IndexedDB: stays on this phone only) ---------- */
@@ -252,7 +291,7 @@ function toast(msg) {
   clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 1600);
 }
 const fmtDate = (ms) => new Date(ms).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
-const KIND_LABEL = { txt: 'Text', md: 'Markdown', docx: 'Word (text only)', pdf: 'PDF' };
+const KIND_LABEL = { txt: 'Text', md: 'Markdown', docx: 'Word', odt: 'ODT', pdf: 'PDF' };
 
 /* ---------- Document list ---------- */
 async function renderList() {
@@ -313,6 +352,11 @@ els.fileInput.onchange = async () => {
       const { text, lost } = await readDocx(file);
       doc.text = text;
       doc.notice = lost;
+    } else if (ext === 'odt') {
+      doc.kind = 'text';
+      const { text, lost } = await readOdt(file);
+      doc.text = text;
+      doc.notice = lost;
     } else if (ext === 'pdf') {
       const buf = await file.arrayBuffer();
       const head = new TextDecoder('latin1').decode(new Uint8Array(buf, 0, Math.min(1024, buf.byteLength)));
@@ -320,7 +364,7 @@ els.fileInput.onchange = async () => {
       doc.kind = 'pdf';
       doc.data = new Blob([buf], { type: 'application/pdf' });
     } else {
-      await info('Can’t open this file', 'This app opens .txt, .md, .docx and .pdf files.' + (ext === 'doc' ? '\n\nOld .doc files aren’t supported — save it as .docx first.' : ''));
+      await info('Can’t open this file', 'This app opens .txt, .md, .docx, .odt and .pdf files.' + (ext === 'doc' ? '\n\nOld .doc files aren’t supported — save it as .docx first.' : ''));
       return;
     }
     await dbPut(doc);
@@ -420,6 +464,110 @@ async function makeDocx(text) {
   return zip.generateAsync({ type: 'blob', compression: 'DEFLATE', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
 }
 
+/* ---------- .odt reading (text only) ---------- */
+const ODF = {
+  text: 'urn:oasis:names:tc:opendocument:xmlns:text:1.0',
+  table: 'urn:oasis:names:tc:opendocument:xmlns:table:1.0',
+  office: 'urn:oasis:names:tc:opendocument:xmlns:office:1.0',
+  draw: 'urn:oasis:names:tc:opendocument:xmlns:drawing:1.0',
+};
+async function readOdt(file) {
+  let zip;
+  try { zip = await JSZip.loadAsync(await file.arrayBuffer()); }
+  catch { throw new Error('This .odt file seems to be damaged.'); }
+  const manifest = zip.file('META-INF/manifest.xml');
+  if (manifest && (await manifest.async('string')).includes('encryption-data')) throw new Error('This .odt file is password-protected and can’t be opened here.');
+  const part = zip.file('content.xml');
+  if (!part) throw new Error('No document text was found in this .odt file.');
+  const xml = new DOMParser().parseFromString(await part.async('string'), 'application/xml');
+  if (xml.getElementsByTagName('parsererror').length) throw new Error('This .odt file seems to be damaged.');
+  const body = xml.getElementsByTagNameNS(ODF.office, 'text')[0];
+  const lines = [];
+  const SKIP = new Set(['sequence-decls', 'variable-decls', 'user-field-decls', 'tracked-changes', 'note', 'soft-page-break', 'bookmark', 'bookmark-start', 'bookmark-end']);
+  const skip = (n) => (n.namespaceURI === ODF.text && (SKIP.has(n.localName) || n.localName.endsWith('-source')))
+    || (n.namespaceURI === ODF.office && (n.localName === 'annotation' || n.localName === 'annotation-end' || n.localName === 'forms'));
+
+  function inline(node) {
+    let out = '';
+    for (const n of node.childNodes) {
+      if (n.nodeType === 3) { out += n.data.replace(/[ \t\r\n]+/g, ' '); continue; }
+      if (n.nodeType !== 1 || skip(n)) continue;
+      if (n.namespaceURI === ODF.text) {
+        const name = n.localName;
+        if (name === 's') { out += ' '.repeat(Math.min(1000, +n.getAttributeNS(ODF.text, 'c') || 1)); continue; }
+        if (name === 'tab') { out += '\t'; continue; }
+        if (name === 'line-break') { out += '\n'; continue; }
+        if (name === 'p' || name === 'h') { out += inline(n) + ' '; continue; } // text inside a text box
+      }
+      out += inline(n);
+    }
+    return out;
+  }
+  function rows(node, out) {
+    for (const n of node.children) {
+      if (n.namespaceURI !== ODF.table) continue;
+      if (n.localName === 'table-row') out.push(n);
+      else if (/^table-(header-)?rows$|^table-row-group$/.test(n.localName)) rows(n, out);
+    }
+    return out;
+  }
+  function block(node) {
+    for (const n of node.children) {
+      if (skip(n)) continue;
+      if (n.namespaceURI === ODF.text && (n.localName === 'p' || n.localName === 'h')) lines.push(inline(n).replace(/^ /, ''));
+      else if (n.namespaceURI === ODF.table && n.localName === 'table') {
+        for (const tr of rows(n, [])) {
+          const cells = [];
+          for (const tc of tr.children) {
+            if (tc.namespaceURI !== ODF.table || !/^(covered-)?table-cell$/.test(tc.localName)) continue;
+            const before = lines.length;
+            block(tc);
+            cells.push(lines.splice(before).join(' ').trim());
+          }
+          while (cells.length && !cells[cells.length - 1]) cells.pop();
+          lines.push(cells.join('\t'));
+        }
+      } else if (n.namespaceURI === ODF.draw && n.localName === 'frame') {
+        const t = inline(n).trim();
+        if (t) lines.push(t);
+      } else block(n);
+    }
+  }
+  if (body) block(body);
+
+  const count = (ns, tag) => xml.getElementsByTagNameNS(ns, tag).length;
+  const lost = [];
+  if (count(ODF.text, 'span') || count(ODF.text, 'h') || xml.getElementsByTagNameNS(ODF.office, 'automatic-styles')[0]?.children.length) lost.push('formatting (bold, fonts, sizes, headings, alignment)');
+  if (count(ODF.text, 'list')) lost.push('bullets and numbering');
+  if (count(ODF.table, 'table')) lost.push(`${count(ODF.table, 'table')} table(s) — their text is kept, one row per line`);
+  const pics = count(ODF.draw, 'image') + count(ODF.draw, 'object');
+  if (pics) lost.push(`${pics} image(s) or object(s)`);
+  const styles = zip.file('styles.xml');
+  if (styles && /<style:(header|footer)[\s>]/.test(await styles.async('string'))) lost.push('headers and footers');
+  if (count(ODF.text, 'note')) lost.push('footnotes');
+  if (count(ODF.office, 'annotation')) lost.push('comments');
+  const notice = 'OpenDocument file: only the text was kept.' + (lost.length ? ' Removed: ' + lost.join('; ') + '.' : ' Any formatting was removed.');
+  return { text: lines.join('\n'), lost: notice };
+}
+
+/* ---------- .odt writing (plain paragraphs) ---------- */
+async function makeOdt(text) {
+  const para = (line) => {
+    if (!line) return '<text:p/>';
+    const inner = line.split('\t').map((seg) => xmlEsc(seg)
+      .replace(/^ +/, (m) => `<text:s text:c="${m.length}"/>`)
+      .replace(/ {2,}/g, (m) => ' ' + `<text:s text:c="${m.length - 1}"/>`)).join('<text:tab/>');
+    return `<text:p>${inner}</text:p>`;
+  };
+  const paras = text.split(/\r\n|\r|\n/).map(para).join('');
+  const zip = new JSZip();
+  // The "mimetype" file must come first and must not be compressed.
+  zip.file('mimetype', 'application/vnd.oasis.opendocument.text', { compression: 'STORE' });
+  zip.file('META-INF/manifest.xml', '<?xml version="1.0" encoding="UTF-8"?><manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0" manifest:version="1.3"><manifest:file-entry manifest:full-path="/" manifest:version="1.3" manifest:media-type="application/vnd.oasis.opendocument.text"/><manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/></manifest:manifest>');
+  zip.file('content.xml', `<?xml version="1.0" encoding="UTF-8"?><office:document-content xmlns:office="${ODF.office}" xmlns:text="${ODF.text}" office:version="1.3"><office:body><office:text>${paras}</office:text></office:body></office:document-content>`);
+  return zip.generateAsync({ type: 'blob', compression: 'DEFLATE', mimeType: 'application/vnd.oasis.opendocument.text' });
+}
+
 /* ---------- Document view ---------- */
 let current = null;      // the open document
 let savedText = '';      // text as last saved, to know if there are unsaved changes
@@ -432,13 +580,22 @@ function setNotice(text) {
   els.noticeText.textContent = text || '';
   els.notice.hidden = !text;
 }
-$('noticeOk').onclick = () => setNotice('');
+$('noticeOk').onclick = () => {
+  setNotice('');
+  // Seen it once: don't show it again for this document.
+  if (current?.notice && current.saved) { current.notice = ''; dbPut(current).catch(() => {}); }
+};
+
+let mode = 'read';       // text documents: 'read' (no keyboard) or 'edit'
 
 function openDoc(doc) {
   current = doc;
+  els.findInput.value = '';
+  find.pdfText = null;
+  closeFind();
   els.docTitle.textContent = doc.name;
   const isPdf = doc.kind === 'pdf';
-  els.editor.hidden = isPdf; els.textTools.hidden = isPdf;
+  els.editor.hidden = els.reader.hidden = els.textTools.hidden = els.readTools.hidden = true;
   els.pdfWrap.hidden = !isPdf; els.pdfTools.hidden = !isPdf;
   setNotice(doc.notice || '');
   showView('doc');
@@ -449,27 +606,60 @@ function openDoc(doc) {
   } else {
     savedText = doc.saved ? doc.text : null;
     els.editor.value = doc.text || '';
-    els.editor.scrollTop = 0;
     els.editor.setSelectionRange(0, 0);
     histReset();
-    updateState();
+    setMode(doc.saved ? 'read' : 'edit');
+    els.editor.scrollTop = els.reader.scrollTop = 0;
     if (!doc.saved) els.editor.focus();
   }
 }
 function closeDoc() {
   if (current?.kind === 'pdf') closePdf();
+  closeFind();
   current = null;
   els.editor.value = '';
+  els.reader.textContent = '';
   showView('list');
   renderList();
 }
-const isDirty = () => current && current.kind === 'text' && els.editor.value !== savedText;
+function setMode(m) {
+  // Keep roughly the same place in the text when switching.
+  const from = mode === 'edit' ? els.editor : els.reader;
+  const ratio = from.scrollTop / Math.max(1, from.scrollHeight - from.clientHeight);
+  mode = m;
+  els.reader.hidden = els.readTools.hidden = m !== 'read';
+  els.editor.hidden = els.textTools.hidden = m !== 'edit';
+  if (m === 'read') renderReader();
+  const to = m === 'edit' ? els.editor : els.reader;
+  to.scrollTop = ratio * (to.scrollHeight - to.clientHeight);
+  if (find.open && els.findInput.value) runFind(false);
+  updateState();
+}
+// A new, never-saved document only counts as changed once something is typed.
+const isDirty = () => current && current.kind === 'text' && els.editor.value !== (current.saved ? savedText : '');
 function updateState() {
   if (!current || current.kind !== 'text') return;
-  els.docState.textContent = (KIND_LABEL[current.format] || 'Text') + (isDirty() ? ' · unsaved changes' : ' · saved');
+  const label = KIND_LABEL[current.format] || 'Text';
+  if (mode === 'read') { els.docState.textContent = label + ' · reading'; return; }
+  els.docState.textContent = label + (!current.saved ? ' · not saved yet' : isDirty() ? ' · unsaved changes' : ' · saved');
   els.undoBtn.disabled = hpos <= 0 && !pendingHist;
   els.redoBtn.disabled = hpos >= hist.length - 1;
 }
+$('editBtn').onclick = () => setMode('edit');
+$('doneBtn').onclick = async () => {
+  if (isDirty()) {
+    const choice = await ask({ title: 'Save changes?', message: 'You have unsaved changes.', buttons: [{ label: 'Discard', value: 'discard', danger: true }, { label: 'Cancel', value: null }, { label: 'Save', value: 'save', primary: true }] });
+    if (choice === null) return;
+    if (choice === 'save' && !(await save())) return;
+    if (choice === 'discard') {
+      if (!current.saved) { savedText = els.editor.value; history.back(); return; } // never saved: back to the list
+      els.editor.value = savedText;
+      histReset();
+    }
+  } else if (!current.saved) { savedText = els.editor.value; history.back(); return; }
+  els.editor.blur();
+  setMode('read');
+};
 
 $('newBtn').onclick = () => {
   const now = Date.now();
@@ -514,7 +704,7 @@ window.addEventListener('popstate', async () => {
 
 /* ---------- Export ---------- */
 function safeName(name) {
-  return (name.replace(/\.(txt|md|markdown|docx|pdf)$/i, '').replace(/[\\/:*?"<>|]+/g, '_').trim() || 'document');
+  return (name.replace(/\.(txt|md|markdown|docx|odt|pdf)$/i, '').replace(/[\\/:*?"<>|]+/g, '_').trim() || 'document');
 }
 function download(blob, filename) {
   const a = document.createElement('a');
@@ -523,18 +713,19 @@ function download(blob, filename) {
   document.body.append(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 20000);
 }
-$('exportBtn').onclick = async () => {
+$('exportBtn').onclick = $('exportBtn2').onclick = async () => {
   if (!current) return;
   const fmt = await ask({
     title: 'Export as…',
-    message: 'The file goes to your phone’s Downloads folder.\n.docx export contains plain text only.',
-    buttons: [{ label: '.txt', value: 'txt' }, { label: '.md', value: 'md' }, { label: '.docx', value: 'docx' }, { label: 'Cancel', value: null }],
+    message: 'The file goes to your phone’s Downloads folder.\n.docx and .odt exports contain plain text only.',
+    buttons: [{ label: '.txt', value: 'txt' }, { label: '.md', value: 'md' }, { label: '.docx', value: 'docx' }, { label: '.odt', value: 'odt' }, { label: 'Cancel', value: null }],
   });
   if (!fmt) return;
   const text = els.editor.value;
   const name = safeName(current.name) + '.' + fmt;
   try {
     if (fmt === 'docx') download(await makeDocx(text), name);
+    else if (fmt === 'odt') download(await makeOdt(text), name);
     else download(new Blob([text], { type: fmt === 'md' ? 'text/markdown;charset=utf-8' : 'text/plain;charset=utf-8' }), name);
     toast('Exported ' + name);
   } catch (err) { info('Export failed', err?.message || String(err)); }
@@ -649,6 +840,7 @@ function buildPages() {
     p.div.className = 'page';
     p.div.dataset.num = p.num;
     sizePage(p);
+    addHl(p);
     els.pdfPages.append(p.div);
     observer.observe(p.div);
   }
@@ -693,12 +885,16 @@ async function drawPage(p) {
     if (err?.name !== 'RenderingCancelledException') console.error(err);
   }
 }
+function currentPage() {
+  const wr = els.pdfWrap.getBoundingClientRect();
+  const mid = wr.top + els.pdfWrap.clientHeight / 2;
+  let n = 1;
+  for (const p of pdfPages) { if (p.div.getBoundingClientRect().top <= mid) n = p.num; else break; }
+  return n;
+}
 function updatePageLabel() {
   if (!pdfPages.length) return;
-  const mid = els.pdfWrap.scrollTop + els.pdfWrap.clientHeight / 2;
-  let n = 1;
-  for (const p of pdfPages) { if (p.div.offsetTop <= mid) n = p.num; else break; }
-  els.pageLabel.textContent = `${n} / ${pdfPages.length}`;
+  els.pageLabel.textContent = `${currentPage()} / ${pdfPages.length}`;
 }
 els.pdfWrap.addEventListener('scroll', updatePageLabel, { passive: true });
 
@@ -752,9 +948,242 @@ window.addEventListener('resize', () => {
   if (Math.abs(nb - baseScale) > 0.01) { baseScale = nb; buildPages(); }
 });
 
+/* ---------- Find in document ---------- */
+const find = { open: false, q: '', re: null, hits: [], idx: -1, pdfText: null, pdfHl: null };
+const MAX_HITS = 5000;
+const makeRe = (q) => new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'giu');
+function allHits(text, re) {
+  const hits = [];
+  re.lastIndex = 0;
+  let m;
+  while ((m = re.exec(text)) && hits.length < MAX_HITS) {
+    hits.push([m.index, m.index + m[0].length]);
+    if (!m[0].length) re.lastIndex++;
+  }
+  return hits;
+}
+function updateCount() {
+  const n = find.hits.length;
+  els.findCount.textContent = !find.re ? '' : !n ? 'none' : (find.idx < 0 ? '' : (find.idx + 1) + '/') + (n >= MAX_HITS ? n + '+' : n);
+}
+function openFind() {
+  find.open = true;
+  els.findBar.hidden = false;
+  els.findInput.focus();
+  els.findInput.select();
+}
+function closeFind() {
+  find.open = false;
+  els.findBar.hidden = true;
+  find.q = ''; find.re = null; find.hits = []; find.idx = -1;
+  els.findCount.textContent = '';
+  clearPdfHl();
+  if (current?.kind === 'text' && mode === 'read') renderReader();
+}
+$('findBtn').onclick = () => (find.open ? closeFind() : openFind());
+$('findClose').onclick = closeFind;
+let findTimer;
+els.findInput.addEventListener('input', () => {
+  clearTimeout(findTimer);
+  findTimer = setTimeout(() => runFind(false), current?.kind === 'pdf' ? 500 : 250);
+});
+els.findInput.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter') return;
+  e.preventDefault();
+  step(e.shiftKey ? -1 : 1);
+});
+// Keep the keyboard on the search box when tapping ↑ / ↓
+for (const id of ['findPrev', 'findNext']) $(id).addEventListener('pointerdown', (e) => e.preventDefault());
+$('findPrev').onclick = () => step(-1);
+$('findNext').onclick = () => step(1);
+
+async function runFind(navigate) {
+  clearTimeout(findTimer);
+  const q = els.findInput.value;
+  find.q = q; find.hits = []; find.idx = -1;
+  find.re = q.trim() ? makeRe(q) : null;
+  clearPdfHl();
+  if (!current) return;
+  if (current.kind === 'pdf') {
+    if (!find.re) { updateCount(); return; }
+    let pages;
+    try { pages = await loadPdfText(); } catch { return; }
+    if (find.q !== q) return; // the search text changed meanwhile
+    pages.forEach((pg, i) => {
+      for (const [s, e] of allHits(pg.s, find.re)) if (find.hits.length < MAX_HITS) find.hits.push({ num: i + 1, s, e });
+    });
+    if (!find.hits.length && pages.every((pg) => !pg.s.trim())) { els.findCount.textContent = 'no text'; info('Can’t search this PDF', 'This PDF has no searchable text. It is probably a scanned image.'); return; }
+    const here = currentPage();
+    find.idx = find.hits.length ? Math.max(0, find.hits.findIndex((h) => h.num >= here)) : -1;
+    showPdfHit();
+    return;
+  }
+  if (mode === 'read') {
+    if (find.re) find.hits = allHits(els.editor.value, find.re);
+    renderReader();
+    if (find.hits.length) {
+      // Start from the first match at or below where you are reading.
+      const marks = els.reader.getElementsByTagName('mark');
+      const top = els.reader.scrollTop;
+      let i = [...marks].findIndex((mk) => mk.offsetTop >= top);
+      find.idx = i < 0 ? 0 : i;
+      showTextHit();
+    } else updateCount();
+  } else {
+    if (find.re) find.hits = allHits(els.editor.value, find.re);
+    updateCount();
+    if (navigate) editStep(1);
+  }
+}
+function step(dir) {
+  if (!current) return;
+  if (find.q !== els.findInput.value || !find.re) return runFind(true);
+  if (current.kind === 'text' && mode === 'edit') return editStep(dir);
+  const n = find.hits.length;
+  if (!n) return;
+  find.idx = (find.idx + dir + n) % n;
+  current.kind === 'pdf' ? showPdfHit() : showTextHit();
+}
+
+/* Text documents */
+function renderReader() {
+  const text = els.editor.value;
+  if (!find.re || !find.hits.length) { els.reader.textContent = text; return; }
+  const frag = document.createDocumentFragment();
+  let pos = 0;
+  for (const [s, e] of find.hits) {
+    if (s > pos) frag.append(text.slice(pos, s));
+    const mk = document.createElement('mark');
+    mk.textContent = text.slice(s, e);
+    frag.append(mk);
+    pos = e;
+  }
+  frag.append(text.slice(pos));
+  els.reader.replaceChildren(frag);
+}
+function showTextHit() {
+  updateCount();
+  if (find.idx < 0) return;
+  if (mode === 'read') {
+    const marks = els.reader.getElementsByTagName('mark');
+    els.reader.querySelector('mark.cur')?.classList.remove('cur');
+    const mk = marks[find.idx];
+    if (!mk) return;
+    mk.classList.add('cur');
+    els.reader.scrollTop = mk.offsetTop - els.reader.clientHeight / 3;
+  } else {
+    const [s, e] = find.hits[find.idx];
+    els.editor.focus({ preventScroll: true });
+    els.editor.setSelectionRange(s, e);
+    scrollEditorTo(s);
+    setTimeout(() => scrollEditorTo(s), 350); // again after the keyboard has opened
+  }
+}
+function editStep(dir) {
+  // The text may have been edited, so look again and go from the cursor.
+  find.hits = find.re ? allHits(els.editor.value, find.re) : [];
+  if (!find.hits.length) { find.idx = -1; updateCount(); return; }
+  const selS = els.editor.selectionStart, selE = els.editor.selectionEnd;
+  let i;
+  if (dir > 0) { i = find.hits.findIndex((h) => h[0] >= selE && !(h[0] === selS && h[1] === selE)); if (i < 0) i = 0; }
+  else { i = find.hits.findLastIndex((h) => h[1] <= selS && !(h[0] === selS && h[1] === selE)); if (i < 0) i = find.hits.length - 1; }
+  find.idx = i;
+  showTextHit();
+}
+// A textarea can't scroll to a position by itself, so measure it with an invisible copy.
+function scrollEditorTo(index) {
+  const ed = els.editor, cs = getComputedStyle(ed);
+  const m = document.createElement('div');
+  for (const p of ['font', 'letterSpacing', 'padding', 'tabSize', 'lineHeight']) m.style[p] = cs[p];
+  Object.assign(m.style, { position: 'absolute', visibility: 'hidden', left: '-9999px', top: '0', boxSizing: 'border-box', width: ed.clientWidth + 'px', whiteSpace: 'pre-wrap', overflowWrap: 'break-word' });
+  m.textContent = ed.value.slice(0, index);
+  const marker = document.createElement('span');
+  marker.textContent = '​';
+  m.append(marker);
+  document.body.append(m);
+  const top = marker.offsetTop;
+  m.remove();
+  ed.scrollTop = top - ed.clientHeight / 3;
+}
+
+/* PDFs */
+async function loadPdfText() {
+  if (find.pdfText) return find.pdfText;
+  if (!pdfDoc || !pdfPages.length) throw new Error('not ready');
+  const token = pdfToken;
+  const pages = [];
+  for (const p of pdfPages) {
+    p.page ??= await pdfDoc.getPage(p.num);
+    const tc = await p.page.getTextContent();
+    if (token !== pdfToken) throw new Error('closed');
+    let s = '';
+    const map = [];
+    for (const it of tc.items) {
+      if (typeof it.str !== 'string') continue;
+      map.push({ start: s.length, it });
+      s += it.str;
+      if (it.hasEOL) s += ' ';
+    }
+    pages.push({ s, map, vp: p.page.getViewport({ scale: 1 }) });
+    els.findCount.textContent = Math.round((100 * p.num) / pdfPages.length) + '%';
+  }
+  find.pdfText = pages;
+  return pages;
+}
+function showPdfHit() {
+  clearPdfHl();
+  updateCount();
+  if (find.idx < 0) return;
+  const h = find.hits[find.idx];
+  const pg = find.pdfText[h.num - 1];
+  const vp = pg.vp;
+  let box = null;
+  for (const { start, it } of pg.map) {
+    const L = it.str.length;
+    const a = Math.max(h.s, start) - start, b = Math.min(h.e, start + L) - start;
+    if (!L || b <= a) continue;
+    const t = it.transform;
+    const ht = it.height || Math.hypot(t[2], t[3]) || 10;
+    const x1 = t[4] + (it.width * a) / L, x2 = t[4] + (it.width * b) / L;
+    const [ax, ay] = vp.convertToViewportPoint(x1, t[5] - ht * 0.25);
+    const [bx, by] = vp.convertToViewportPoint(x2, t[5] + ht * 0.95);
+    const r = { l: Math.min(ax, bx), t: Math.min(ay, by), r: Math.max(ax, bx), b: Math.max(ay, by) };
+    box = box ? { l: Math.min(box.l, r.l), t: Math.min(box.t, r.t), r: Math.max(box.r, r.r), b: Math.max(box.b, r.b) } : r;
+  }
+  const p = pdfPages[h.num - 1];
+  if (box) find.pdfHl = { num: h.num, l: box.l / vp.width, t: box.t / vp.height, w: (box.r - box.l) / vp.width, h: (box.b - box.t) / vp.height };
+  addHl(p);
+  const wrap = els.pdfWrap, wr = wrap.getBoundingClientRect(), pr = p.div.getBoundingClientRect();
+  const y = (find.pdfHl ? find.pdfHl.t : 0) * pr.height, x = (find.pdfHl ? find.pdfHl.l : 0) * pr.width;
+  wrap.scrollTop += pr.top - wr.top + y - wrap.clientHeight / 3;
+  if (find.pdfHl) wrap.scrollLeft += pr.left - wr.left + x - wrap.clientWidth / 3;
+  updatePageLabel();
+}
+function addHl(p) {
+  const hl = find.pdfHl;
+  if (!hl || !p?.div || hl.num !== p.num) return;
+  const d = document.createElement('div');
+  d.className = 'hl';
+  Object.assign(d.style, { left: hl.l * 100 + '%', top: hl.t * 100 + '%', width: hl.w * 100 + '%', height: hl.h * 100 + '%' });
+  p.div.append(d);
+}
+function clearPdfHl() {
+  find.pdfHl = null;
+  for (const d of els.pdfPages.querySelectorAll('.hl')) d.remove();
+}
+
 /* ---------- Start ---------- */
 renderList();
-if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch((e) => console.warn('Offline setup failed', e));
+if ('serviceWorker' in navigator) {
+  // When an update of the app arrives, reload — but only on the document list, so nothing unsaved is lost.
+  const hadWorker = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadWorker) return;
+    if (!current) location.reload();
+    else toast('App updated — it will refresh next time you open it');
+  });
+  navigator.serviceWorker.register('sw.js').catch((e) => console.warn('Offline setup failed', e));
+}
 </script>
 </body>
 </html>

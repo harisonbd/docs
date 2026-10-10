@@ -1,7 +1,7 @@
 {
   "name": "Pocket Docs",
   "short_name": "Docs",
-  "description": "Simple offline documents: read and write text, Markdown and Word files, view PDFs.",
+  "description": "Simple offline documents: read and write text, Markdown, Word and OpenDocument files, view PDFs.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

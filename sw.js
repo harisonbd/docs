@@ -1,6 +1,6 @@
 // Offline support: stores every app file on the phone the first time the app opens.
 // To publish an update later, change VERSION (e.g. 'pocketdocs-v2') and upload the changed files.
-const VERSION = 'pocketdocs-v1';
+const VERSION = 'pocketdocs-v2';
 const FILES = [
   './', 'index.html', 'manifest.json', 'icon-192.png', 'icon-512.png', 'icon-maskable.png',
   'jszip.min.js', 'pdf.min.js', 'pdf.worker.min.js',
@@ -11,7 +11,8 @@ const FILES = [
 ];
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(VERSION).then((c) => c.addAll(FILES)).then(() => self.skipWaiting()));
+  // cache: 'reload' skips the browser's short-term copy, so an update always gets the newest files.
+  e.waitUntil(caches.open(VERSION).then((c) => c.addAll(FILES.map((f) => new Request(f, { cache: 'reload' })))).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (e) => {
