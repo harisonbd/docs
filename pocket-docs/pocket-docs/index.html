@@ -1,0 +1,760 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f6f6f4" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#18181a" media="(prefers-color-scheme: dark)">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; worker-src 'self' blob:; connect-src 'self' blob: data:; font-src 'self' data:">
+<title>Pocket Docs</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<style>
+  :root {
+    --bg: #f6f6f4; --surface: #ffffff; --text: #1c1c1e; --muted: #6b6b70;
+    --line: #dcdcd8; --accent: #2f5bd3; --accent-text: #ffffff;
+    --danger: #c0352b; --notice-bg: #fff4d6; --notice-text: #5a4300;
+    --page-shadow: 0 1px 4px rgba(0,0,0,.18);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #18181a; --surface: #232326; --text: #ececee; --muted: #a0a0a6;
+      --line: #3a3a3e; --accent: #7d9cff; --accent-text: #0e1530;
+      --danger: #ff7b70; --notice-bg: #3a3218; --notice-text: #f3dfa2;
+      --page-shadow: 0 1px 4px rgba(0,0,0,.6);
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 18px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .view { display: flex; flex-direction: column; height: 100dvh; }
+  .view[hidden] { display: none; }
+  button {
+    font: inherit; color: var(--text); background: var(--surface);
+    border: 1px solid var(--line); border-radius: 12px;
+    min-height: 52px; min-width: 52px; padding: 0 16px; cursor: pointer;
+  }
+  button:active { filter: brightness(.92); }
+  button:disabled { opacity: .4; }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600; }
+  button.danger { color: var(--danger); }
+
+  .bar {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 14px; padding-top: max(10px, env(safe-area-inset-top));
+    border-bottom: 1px solid var(--line); background: var(--bg);
+  }
+  .bar h1 { font-size: 26px; margin: 6px 2px; }
+  .bar .title { flex: 1; min-width: 0; }
+  .bar .title b { display: block; font-size: 19px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bar .title small { color: var(--muted); font-size: 15px; }
+
+  .actions { display: flex; gap: 12px; padding: 14px; }
+  .actions button { flex: 1; min-height: 60px; font-size: 19px; }
+
+  #docList { list-style: none; margin: 0; padding: 0 14px 24px; overflow-y: auto; flex: 1; }
+  #docList li { display: flex; gap: 8px; margin-bottom: 10px; }
+  #docList .open {
+    flex: 1; min-width: 0; text-align: left; padding: 10px 16px; min-height: 64px;
+  }
+  #docList .open b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+  #docList .open small { color: var(--muted); font-size: 15px; }
+  #docList .more { font-size: 24px; line-height: 1; padding: 0; width: 56px; }
+  #emptyMsg { color: var(--muted); text-align: center; padding: 30px 20px; }
+
+  #notice {
+    display: flex; gap: 10px; align-items: center;
+    background: var(--notice-bg); color: var(--notice-text);
+    padding: 10px 14px; font-size: 16px;
+  }
+  #notice[hidden] { display: none; }
+  #notice span { flex: 1; }
+  #notice button { min-height: 44px; background: transparent; color: inherit; border-color: currentColor; }
+
+  #editor {
+    flex: 1; width: 100%; border: 0; resize: none; outline: none;
+    background: var(--surface); color: var(--text);
+    font: 18px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding: 16px; tab-size: 4;
+  }
+  #editor[hidden] { display: none; }
+
+  #pdfWrap { flex: 1; overflow: auto; touch-action: pan-x pan-y; background: var(--bg); }
+  #pdfWrap[hidden] { display: none; }
+  #pdfPages { width: max-content; min-width: 100%; padding: 6px 0 20px; transform-origin: 0 0; }
+  .page { margin: 10px auto; background: #fff; box-shadow: var(--page-shadow); position: relative; }
+  .page canvas { display: block; width: 100%; height: 100%; }
+  #pdfStatus { color: var(--muted); text-align: center; padding: 30px 20px; }
+
+  .tools {
+    display: flex; gap: 8px; padding: 8px 10px;
+    padding-bottom: max(8px, env(safe-area-inset-bottom));
+    border-top: 1px solid var(--line); background: var(--bg);
+  }
+  .tools[hidden] { display: none; }
+  .tools button { flex: 1; padding: 0 6px; font-size: 17px; }
+  .tools .label { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 16px; }
+
+  dialog {
+    border: 1px solid var(--line); border-radius: 16px; padding: 20px;
+    background: var(--surface); color: var(--text);
+    width: min(92vw, 420px);
+  }
+  dialog::backdrop { background: rgba(0,0,0,.45); }
+  dialog h3 { margin: 0 0 8px; font-size: 21px; }
+  dialog p { margin: 0 0 14px; color: var(--muted); font-size: 16px; white-space: pre-line; }
+  dialog input {
+    width: 100%; font: inherit; padding: 12px; margin-bottom: 16px;
+    border: 1px solid var(--line); border-radius: 10px;
+    background: var(--bg); color: var(--text);
+  }
+  dialog .btns { display: flex; flex-wrap: wrap; gap: 10px; justify-content: flex-end; }
+  dialog .btns button { flex: 1 1 auto; }
+
+  #toast {
+    position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%);
+    background: var(--text); color: var(--bg); padding: 10px 18px; border-radius: 999px;
+    font-size: 16px; pointer-events: none; opacity: 0; transition: opacity .2s;
+  }
+  #toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+
+<!-- Document list -->
+<section id="listView" class="view">
+  <header class="bar"><h1>Documents</h1></header>
+  <div class="actions">
+    <button id="newBtn" class="primary">New</button>
+    <button id="openBtn">Open file</button>
+  </div>
+  <input type="file" id="fileInput" hidden>
+  <ul id="docList"></ul>
+  <p id="emptyMsg" hidden>No documents yet.<br>Tap “New” or “Open file”.</p>
+</section>
+
+<!-- Open document -->
+<section id="docView" class="view" hidden>
+  <header class="bar">
+    <button id="backBtn" aria-label="Back to list">← Back</button>
+    <div class="title"><b id="docTitle"></b><small id="docState"></small></div>
+  </header>
+  <div id="notice" hidden><span id="noticeText"></span><button id="noticeOk">OK</button></div>
+  <textarea id="editor" hidden autocapitalize="sentences" aria-label="Document text"></textarea>
+  <div id="pdfWrap" hidden><div id="pdfPages"></div></div>
+  <footer id="textTools" class="tools" hidden>
+    <button id="undoBtn">Undo</button>
+    <button id="redoBtn">Redo</button>
+    <button id="saveBtn" class="primary">Save</button>
+    <button id="exportBtn">Export</button>
+  </footer>
+  <footer id="pdfTools" class="tools" hidden>
+    <button id="zoomOut" aria-label="Zoom out">−</button>
+    <button id="zoomLabel" aria-label="Reset zoom">100%</button>
+    <button id="zoomIn" aria-label="Zoom in">+</button>
+    <span id="pageLabel" class="label"></span>
+  </footer>
+</section>
+
+<dialog id="dlg">
+  <h3 id="dlgTitle"></h3>
+  <p id="dlgMsg"></p>
+  <input id="dlgInput" type="text" autocomplete="off">
+  <div class="btns" id="dlgBtns"></div>
+</dialog>
+<div id="toast"></div>
+
+<script src="jszip.min.js"></script>
+<script type="module">
+const $ = (id) => document.getElementById(id);
+const els = {
+  listView: $('listView'), docView: $('docView'), docList: $('docList'), emptyMsg: $('emptyMsg'),
+  fileInput: $('fileInput'), editor: $('editor'), pdfWrap: $('pdfWrap'), pdfPages: $('pdfPages'),
+  textTools: $('textTools'), pdfTools: $('pdfTools'), docTitle: $('docTitle'), docState: $('docState'),
+  notice: $('notice'), noticeText: $('noticeText'), undoBtn: $('undoBtn'), redoBtn: $('redoBtn'),
+  zoomLabel: $('zoomLabel'), pageLabel: $('pageLabel'),
+};
+
+/* ---------- Storage (IndexedDB: stays on this phone only) ---------- */
+const DB_NAME = 'pocketdocs', STORE = 'docs';
+let dbPromise;
+function db() {
+  dbPromise ??= new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, 1);
+    req.onupgradeneeded = () => req.result.createObjectStore(STORE, { keyPath: 'id' });
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+  return dbPromise;
+}
+async function tx(mode, fn) {
+  const d = await db();
+  return new Promise((resolve, reject) => {
+    const t = d.transaction(STORE, mode);
+    const r = fn(t.objectStore(STORE));
+    t.oncomplete = () => resolve(r?.result);
+    t.onerror = () => reject(t.error);
+    t.onabort = () => reject(t.error || new Error('Storage is full or unavailable.'));
+  });
+}
+const dbAll = () => tx('readonly', (s) => s.getAll());
+const dbPut = (doc) => tx('readwrite', (s) => s.put(doc));
+const dbDel = (id) => tx('readwrite', (s) => s.delete(id));
+let persistAsked = false;
+function askPersist() {
+  if (persistAsked) return;
+  persistAsked = true;
+  navigator.storage?.persist?.().catch(() => {});
+}
+const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+
+/* ---------- Small UI helpers ---------- */
+const dlg = $('dlg');
+let dlgResolve = null;
+function ask({ title, message = '', input = null, buttons }) {
+  if (dlgResolve) { dlgResolve(null); dlgResolve = null; if (dlg.open) dlg.close(); }
+  $('dlgTitle').textContent = title;
+  $('dlgMsg').textContent = message;
+  $('dlgMsg').hidden = !message;
+  const inp = $('dlgInput');
+  inp.hidden = input === null;
+  inp.value = input ?? '';
+  const box = $('dlgBtns');
+  box.replaceChildren();
+  return new Promise((resolve) => {
+    dlgResolve = resolve;
+    const finish = (val) => { if (dlgResolve !== resolve) return; dlgResolve = null; dlg.close(); resolve(val); };
+    for (const b of buttons) {
+      const el = document.createElement('button');
+      el.textContent = b.label;
+      if (b.primary) el.className = 'primary';
+      if (b.danger) el.className = 'danger';
+      el.onclick = () => finish(b.value === '__input__' ? inp.value : b.value);
+      box.append(el);
+    }
+    inp.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); finish(inp.value); } };
+    dlg.oncancel = (e) => { e.preventDefault(); finish(null); };
+    dlg.showModal();
+    if (input !== null) { inp.focus(); inp.select(); }
+  });
+}
+const info = (title, message) => ask({ title, message, buttons: [{ label: 'OK', value: true, primary: true }] });
+let toastTimer;
+function toast(msg) {
+  const t = $('toast');
+  t.textContent = msg; t.classList.add('show');
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 1600);
+}
+const fmtDate = (ms) => new Date(ms).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+const KIND_LABEL = { txt: 'Text', md: 'Markdown', docx: 'Word (text only)', pdf: 'PDF' };
+
+/* ---------- Document list ---------- */
+async function renderList() {
+  const docs = (await dbAll()).sort((a, b) => b.updated - a.updated);
+  els.docList.replaceChildren();
+  els.emptyMsg.hidden = docs.length > 0;
+  for (const doc of docs) {
+    const li = document.createElement('li');
+    const open = document.createElement('button');
+    open.className = 'open';
+    const b = document.createElement('b'); b.textContent = doc.name;
+    const s = document.createElement('small'); s.textContent = `${KIND_LABEL[doc.format] || 'Text'} · ${fmtDate(doc.updated)}`;
+    open.append(b, s);
+    open.onclick = () => openDoc(doc);
+    const more = document.createElement('button');
+    more.className = 'more'; more.textContent = '⋯'; more.setAttribute('aria-label', `Options for ${doc.name}`);
+    more.onclick = () => docOptions(doc);
+    li.append(open, more);
+    els.docList.append(li);
+  }
+}
+async function docOptions(doc) {
+  const choice = await ask({
+    title: doc.name,
+    buttons: [
+      { label: 'Rename', value: 'rename' },
+      { label: 'Delete', value: 'delete', danger: true },
+      { label: 'Cancel', value: null },
+    ],
+  });
+  if (choice === 'rename') {
+    const name = await ask({ title: 'Rename', input: doc.name, buttons: [{ label: 'Cancel', value: null }, { label: 'Rename', value: '__input__', primary: true }] });
+    if (name !== null && name.trim()) { doc.name = name.trim(); doc.updated = Date.now(); await dbPut(doc); renderList(); }
+  } else if (choice === 'delete') {
+    const ok = await ask({ title: 'Delete document?', message: `“${doc.name}” will be removed from this app. This can't be undone.`, buttons: [{ label: 'Cancel', value: false }, { label: 'Delete', value: true, danger: true }] });
+    if (ok) { await dbDel(doc.id); renderList(); toast('Deleted'); }
+  }
+}
+
+/* ---------- Opening files from the phone ---------- */
+$('openBtn').onclick = () => els.fileInput.click();
+els.fileInput.onchange = async () => {
+  const file = els.fileInput.files[0];
+  els.fileInput.value = '';
+  if (!file) return;
+  const dot = file.name.lastIndexOf('.');
+  const ext = dot > 0 ? file.name.slice(dot + 1).toLowerCase() : '';
+  const base = dot > 0 ? file.name.slice(0, dot) : file.name;
+  const now = Date.now();
+  const doc = { id: newId(), name: base || 'Untitled', format: ext, created: now, updated: now, saved: true };
+  try {
+    if (ext === 'txt' || ext === 'md' || ext === 'markdown') {
+      doc.format = ext === 'txt' ? 'txt' : 'md';
+      doc.kind = 'text';
+      doc.text = new TextDecoder('utf-8').decode(await file.arrayBuffer());
+    } else if (ext === 'docx') {
+      doc.kind = 'text';
+      const { text, lost } = await readDocx(file);
+      doc.text = text;
+      doc.notice = lost;
+    } else if (ext === 'pdf') {
+      const buf = await file.arrayBuffer();
+      const head = new TextDecoder('latin1').decode(new Uint8Array(buf, 0, Math.min(1024, buf.byteLength)));
+      if (!head.includes('%PDF')) throw new Error('This file does not look like a PDF.');
+      doc.kind = 'pdf';
+      doc.data = new Blob([buf], { type: 'application/pdf' });
+    } else {
+      await info('Can’t open this file', 'This app opens .txt, .md, .docx and .pdf files.' + (ext === 'doc' ? '\n\nOld .doc files aren’t supported — save it as .docx first.' : ''));
+      return;
+    }
+    await dbPut(doc);
+    askPersist();
+    renderList();
+    openDoc(doc);
+  } catch (err) {
+    console.error(err);
+    await info('Couldn’t open the file', err?.message || String(err));
+  }
+};
+
+/* ---------- .docx reading (text only) ---------- */
+const W_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+async function readDocx(file) {
+  let zip;
+  try { zip = await JSZip.loadAsync(await file.arrayBuffer()); }
+  catch { throw new Error('This .docx file seems to be damaged.'); }
+  const part = zip.file('word/document.xml');
+  if (!part) throw new Error('No document text was found in this .docx file.');
+  const xml = new DOMParser().parseFromString(await part.async('string'), 'application/xml');
+  if (xml.getElementsByTagName('parsererror').length) throw new Error('This .docx file seems to be damaged.');
+  const body = xml.getElementsByTagNameNS(W_NS, 'body')[0];
+  const lines = [];
+  const SKIP = new Set(['del', 'delText', 'instrText', 'rPr', 'pPr', 'sectPr', 'fldData']);
+
+  function runText(node) {
+    let out = '';
+    for (const n of node.childNodes) {
+      if (n.nodeType !== 1) continue;
+      if (n.namespaceURI === W_NS) {
+        const name = n.localName;
+        if (SKIP.has(name)) continue;
+        if (name === 't') { out += n.textContent; continue; }
+        if (name === 'tab' || name === 'ptab') { out += '\t'; continue; }
+        if (name === 'br' || name === 'cr') { out += '\n'; continue; }
+        if (name === 'noBreakHyphen') { out += '-'; continue; }
+        if (name === 'p') { out += runText(n) + ' '; continue; } // nested paragraph (e.g. text box)
+      }
+      out += runText(n);
+    }
+    return out;
+  }
+  function block(node) {
+    for (const n of node.childNodes) {
+      if (n.nodeType !== 1) continue;
+      if (n.namespaceURI === W_NS && n.localName === 'p') lines.push(runText(n));
+      else if (n.namespaceURI === W_NS && n.localName === 'tbl') {
+        for (const tr of n.childNodes) {
+          if (tr.localName !== 'tr') continue;
+          const cells = [];
+          for (const tc of tr.childNodes) {
+            if (tc.localName !== 'tc') continue;
+            const before = lines.length;
+            block(tc);
+            cells.push(lines.splice(before).join(' ').trim());
+          }
+          lines.push(cells.join('\t'));
+        }
+      } else if (n.namespaceURI !== W_NS || !SKIP.has(n.localName)) block(n);
+    }
+  }
+  if (body) block(body);
+
+  const count = (tag) => xml.getElementsByTagNameNS(W_NS, tag).length;
+  const lost = [];
+  const fmt = ['b', 'i', 'u', 'color', 'sz', 'highlight', 'rFonts', 'pStyle', 'jc'].some((t) => count(t) > 0);
+  if (fmt) lost.push('formatting (bold, fonts, sizes, headings, alignment)');
+  if (count('numPr')) lost.push('bullets and numbering');
+  if (count('tbl')) lost.push(`${count('tbl')} table(s) — their text is kept, one row per line`);
+  const pics = count('drawing') + count('pict') + count('object');
+  if (pics) lost.push(`${pics} image(s) or drawing(s)`);
+  if (zip.file(/^word\/(header|footer)\d*\.xml$/).length) lost.push('headers and footers');
+  if (zip.file('word/footnotes.xml') || zip.file('word/endnotes.xml')) lost.push('footnotes');
+  if (zip.file('word/comments.xml')) lost.push('comments');
+  const notice = 'Word file: only the text was kept.' + (lost.length ? ' Removed: ' + lost.join('; ') + '.' : ' Any formatting was removed.');
+  return { text: lines.join('\n'), lost: notice };
+}
+
+/* ---------- .docx writing (plain paragraphs) ---------- */
+function xmlEsc(s) {
+  return s.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F￾￿]/g, '')
+          .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+async function makeDocx(text) {
+  const paras = text.split(/\r\n|\r|\n/).map((line) => {
+    if (!line) return '<w:p/>';
+    const runs = line.split('\t').map((seg, i) => (i ? '<w:tab/>' : '') + (seg ? `<w:t xml:space="preserve">${xmlEsc(seg)}</w:t>` : '')).join('');
+    return `<w:p><w:r>${runs}</w:r></w:p>`;
+  }).join('');
+  const zip = new JSZip();
+  zip.file('[Content_Types].xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/></Types>');
+  zip.file('_rels/.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>');
+  zip.file('word/_rels/document.xml.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>');
+  zip.file('word/styles.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles xmlns:w="${W_NS}"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:eastAsia="Calibri" w:cs="Calibri"/><w:sz w:val="22"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:after="120" w:line="276" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults></w:styles>`);
+  zip.file('word/document.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="${W_NS}"><w:body>${paras}<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1417" w:right="1417" w:bottom="1134" w:left="1417" w:header="708" w:footer="708" w:gutter="0"/></w:sectPr></w:body></w:document>`);
+  return zip.generateAsync({ type: 'blob', compression: 'DEFLATE', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+}
+
+/* ---------- Document view ---------- */
+let current = null;      // the open document
+let savedText = '';      // text as last saved, to know if there are unsaved changes
+
+function showView(name) {
+  els.listView.hidden = name !== 'list';
+  els.docView.hidden = name !== 'doc';
+}
+function setNotice(text) {
+  els.noticeText.textContent = text || '';
+  els.notice.hidden = !text;
+}
+$('noticeOk').onclick = () => setNotice('');
+
+function openDoc(doc) {
+  current = doc;
+  els.docTitle.textContent = doc.name;
+  const isPdf = doc.kind === 'pdf';
+  els.editor.hidden = isPdf; els.textTools.hidden = isPdf;
+  els.pdfWrap.hidden = !isPdf; els.pdfTools.hidden = !isPdf;
+  setNotice(doc.notice || '');
+  showView('doc');
+  history.pushState({ doc: doc.id }, '');
+  if (isPdf) {
+    els.docState.textContent = 'PDF · view only';
+    showPdf(doc.data);
+  } else {
+    savedText = doc.saved ? doc.text : null;
+    els.editor.value = doc.text || '';
+    els.editor.scrollTop = 0;
+    els.editor.setSelectionRange(0, 0);
+    histReset();
+    updateState();
+    if (!doc.saved) els.editor.focus();
+  }
+}
+function closeDoc() {
+  if (current?.kind === 'pdf') closePdf();
+  current = null;
+  els.editor.value = '';
+  showView('list');
+  renderList();
+}
+const isDirty = () => current && current.kind === 'text' && els.editor.value !== savedText;
+function updateState() {
+  if (!current || current.kind !== 'text') return;
+  els.docState.textContent = (KIND_LABEL[current.format] || 'Text') + (isDirty() ? ' · unsaved changes' : ' · saved');
+  els.undoBtn.disabled = hpos <= 0 && !pendingHist;
+  els.redoBtn.disabled = hpos >= hist.length - 1;
+}
+
+$('newBtn').onclick = () => {
+  const now = Date.now();
+  openDoc({ id: newId(), name: 'Untitled', kind: 'text', format: 'txt', text: '', created: now, updated: now, saved: false });
+};
+
+async function save() {
+  if (!current || current.kind !== 'text') return true;
+  if (!current.saved) {
+    const name = await ask({ title: 'Save as', message: 'Name for this document:', input: current.name, buttons: [{ label: 'Cancel', value: null }, { label: 'Save', value: '__input__', primary: true }] });
+    if (name === null) return false;
+    current.name = name.trim() || 'Untitled';
+    els.docTitle.textContent = current.name;
+  }
+  flushHist();
+  current.text = els.editor.value;
+  current.updated = Date.now();
+  current.saved = true;
+  try { await dbPut(current); }
+  catch (err) { await info('Couldn’t save', err?.message || String(err)); return false; }
+  savedText = current.text;
+  askPersist();
+  updateState();
+  toast('Saved');
+  return true;
+}
+$('saveBtn').onclick = save;
+
+async function leaveAllowed() {
+  if (!isDirty()) return true;
+  const choice = await ask({ title: 'Save changes?', message: 'You have unsaved changes.', buttons: [{ label: 'Discard', value: 'discard', danger: true }, { label: 'Cancel', value: null }, { label: 'Save', value: 'save', primary: true }] });
+  if (choice === 'discard') return true;
+  if (choice === 'save') return save();
+  return false;
+}
+$('backBtn').onclick = () => history.back();
+window.addEventListener('popstate', async () => {
+  if (!current) return;
+  if (await leaveAllowed()) closeDoc();
+  else history.pushState({ doc: current.id }, '');
+});
+
+/* ---------- Export ---------- */
+function safeName(name) {
+  return (name.replace(/\.(txt|md|markdown|docx|pdf)$/i, '').replace(/[\\/:*?"<>|]+/g, '_').trim() || 'document');
+}
+function download(blob, filename) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 20000);
+}
+$('exportBtn').onclick = async () => {
+  if (!current) return;
+  const fmt = await ask({
+    title: 'Export as…',
+    message: 'The file goes to your phone’s Downloads folder.\n.docx export contains plain text only.',
+    buttons: [{ label: '.txt', value: 'txt' }, { label: '.md', value: 'md' }, { label: '.docx', value: 'docx' }, { label: 'Cancel', value: null }],
+  });
+  if (!fmt) return;
+  const text = els.editor.value;
+  const name = safeName(current.name) + '.' + fmt;
+  try {
+    if (fmt === 'docx') download(await makeDocx(text), name);
+    else download(new Blob([text], { type: fmt === 'md' ? 'text/markdown;charset=utf-8' : 'text/plain;charset=utf-8' }), name);
+    toast('Exported ' + name);
+  } catch (err) { info('Export failed', err?.message || String(err)); }
+};
+
+/* ---------- Undo / redo ---------- */
+let hist = [], hpos = 0, pendingHist = false, histTimer;
+const MAX_HIST = 300;
+function snap() { return { v: els.editor.value, s: els.editor.selectionStart, e: els.editor.selectionEnd }; }
+function histReset() { hist = [snap()]; hpos = 0; pendingHist = false; clearTimeout(histTimer); }
+function flushHist() {
+  clearTimeout(histTimer);
+  pendingHist = false;
+  if (hist[hpos].v === els.editor.value) return;
+  hist = hist.slice(0, hpos + 1);
+  hist.push(snap());
+  if (hist.length > MAX_HIST) hist.shift();
+  hpos = hist.length - 1;
+}
+function applySnap(sn) {
+  els.editor.value = sn.v;
+  els.editor.setSelectionRange(sn.s, sn.e);
+  updateState();
+}
+function undo() { flushHist(); if (hpos > 0) { hpos--; applySnap(hist[hpos]); } }
+function redo() { flushHist(); if (hpos < hist.length - 1) { hpos++; applySnap(hist[hpos]); } }
+els.editor.addEventListener('input', (e) => {
+  // Paste, cut and drops get their own undo step; typing is grouped by short pauses.
+  if (/Paste|Cut|Drop/i.test(e.inputType || '')) flushHist();
+  else { pendingHist = true; clearTimeout(histTimer); histTimer = setTimeout(() => { flushHist(); updateState(); }, 500); }
+  updateState();
+});
+els.editor.addEventListener('beforeinput', (e) => {
+  if (e.inputType === 'historyUndo') { e.preventDefault(); undo(); }
+  if (e.inputType === 'historyRedo') { e.preventDefault(); redo(); }
+});
+els.editor.addEventListener('keydown', (e) => {
+  if (e.key === 'Tab') { e.preventDefault(); document.execCommand('insertText', false, '\t'); }
+});
+// Keep the keyboard open when tapping Undo/Redo
+for (const b of [els.undoBtn, els.redoBtn]) b.addEventListener('pointerdown', (e) => e.preventDefault());
+els.undoBtn.onclick = undo;
+els.redoBtn.onclick = redo;
+
+/* ---------- PDF viewer (view only) ---------- */
+let pdfjs = null, pdfDoc = null, pdfTask = null, pdfPages = [], zoom = 1, baseScale = 1, observer = null, pdfToken = 0;
+const ZOOM_MIN = 0.5, ZOOM_MAX = 5;
+const MAX_CANVAS_PIXELS = 8_000_000;
+
+async function showPdf(blob) {
+  const token = ++pdfToken;
+  els.pdfPages.replaceChildren(statusEl('Opening PDF…'));
+  els.pageLabel.textContent = '';
+  zoom = 1;
+  try {
+    if (!pdfjs) {
+      pdfjs = await import('./pdf.min.js');
+      pdfjs.GlobalWorkerOptions.workerSrc = new URL('pdf.worker.min.js', location.href).href;
+    }
+    const data = new Uint8Array(await blob.arrayBuffer());
+    const task = pdfjs.getDocument({
+      data, isEvalSupported: false, enableXfa: false,
+      standardFontDataUrl: new URL('./', location.href).href,
+      wasmUrl: new URL('./', location.href).href,
+    });
+    const doc = await task.promise;
+    if (token !== pdfToken) { task.destroy(); return; }
+    pdfTask = task; pdfDoc = doc;
+    const first = await doc.getPage(1);
+    const vp = first.getViewport({ scale: 1 });
+    baseScale = Math.max(0.1, (els.pdfWrap.clientWidth - 16) / vp.width);
+    pdfPages = [];
+    for (let i = 1; i <= doc.numPages; i++) pdfPages.push({ num: i, page: i === 1 ? first : null, div: null, canvas: null, task: null, drawnAt: 0 });
+    // Page sizes: most PDFs use one size; fetch the others lazily but use page 1's size as a placeholder.
+    pdfPages.forEach((p) => { p.w = vp.width; p.h = vp.height; });
+    buildPages();
+    // Fill in true sizes for pages that differ (cheap, no rendering).
+    for (const p of pdfPages.slice(1)) {
+      if (token !== pdfToken) return;
+      p.page = await doc.getPage(p.num);
+      const v = p.page.getViewport({ scale: 1 });
+      if (v.width !== p.w || v.height !== p.h) { p.w = v.width; p.h = v.height; sizePage(p); }
+    }
+  } catch (err) {
+    if (token !== pdfToken) return;
+    console.error(err);
+    const msg = err?.name === 'PasswordException' ? 'This PDF is password-protected and can’t be opened here.' : 'This PDF could not be displayed. ' + (err?.message || '');
+    els.pdfPages.replaceChildren(statusEl(msg));
+  }
+}
+function statusEl(text) { const p = document.createElement('p'); p.id = 'pdfStatus'; p.textContent = text; return p; }
+function closePdf() {
+  pdfToken++;
+  observer?.disconnect(); observer = null;
+  for (const p of pdfPages) p.task?.cancel();
+  pdfPages = [];
+  pdfTask?.destroy(); pdfTask = null; pdfDoc = null;
+  els.pdfPages.replaceChildren();
+}
+function sizePage(p) {
+  const s = baseScale * zoom;
+  p.div.style.width = Math.floor(p.w * s) + 'px';
+  p.div.style.height = Math.floor(p.h * s) + 'px';
+}
+function buildPages() {
+  observer?.disconnect();
+  els.pdfPages.replaceChildren();
+  observer = new IntersectionObserver(onIntersect, { root: els.pdfWrap, rootMargin: '150% 0px' });
+  for (const p of pdfPages) {
+    p.task?.cancel(); p.task = null; p.canvas = null; p.drawnAt = 0;
+    p.div = document.createElement('div');
+    p.div.className = 'page';
+    p.div.dataset.num = p.num;
+    sizePage(p);
+    els.pdfPages.append(p.div);
+    observer.observe(p.div);
+  }
+  els.zoomLabel.textContent = Math.round(zoom * 100) + '%';
+  updatePageLabel();
+}
+function onIntersect(entries) {
+  for (const en of entries) {
+    const p = pdfPages[en.target.dataset.num - 1];
+    if (!p) continue;
+    if (en.isIntersecting) drawPage(p);
+    else if (p.canvas) { p.task?.cancel(); p.task = null; p.canvas.width = p.canvas.height = 0; p.canvas.remove(); p.canvas = null; p.drawnAt = 0; }
+  }
+}
+async function drawPage(p) {
+  const s = baseScale * zoom;
+  if (p.canvas && p.drawnAt === s) return;
+  const token = pdfToken;
+  try {
+    p.page ??= await pdfDoc.getPage(p.num);
+    if (token !== pdfToken) return;
+    const vp = p.page.getViewport({ scale: s });
+    let out = window.devicePixelRatio || 1;
+    const px = vp.width * vp.height * out * out;
+    if (px > MAX_CANVAS_PIXELS) out = Math.sqrt(MAX_CANVAS_PIXELS / (vp.width * vp.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.floor(vp.width * out);
+    canvas.height = Math.floor(vp.height * out);
+    p.task?.cancel();
+    const task = p.page.render({
+      canvas, canvasContext: canvas.getContext('2d'), viewport: vp,
+      transform: out !== 1 ? [out, 0, 0, out, 0, 0] : null,
+    });
+    p.task = task;
+    await task.promise;
+    if (p.task !== task || token !== pdfToken) return;
+    p.task = null;
+    p.canvas?.remove();
+    p.canvas = canvas; p.drawnAt = s;
+    p.div.append(canvas);
+  } catch (err) {
+    if (err?.name !== 'RenderingCancelledException') console.error(err);
+  }
+}
+function updatePageLabel() {
+  if (!pdfPages.length) return;
+  const mid = els.pdfWrap.scrollTop + els.pdfWrap.clientHeight / 2;
+  let n = 1;
+  for (const p of pdfPages) { if (p.div.offsetTop <= mid) n = p.num; else break; }
+  els.pageLabel.textContent = `${n} / ${pdfPages.length}`;
+}
+els.pdfWrap.addEventListener('scroll', updatePageLabel, { passive: true });
+
+function setZoom(z, ax, ay) {
+  if (!pdfPages.length) return;
+  z = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z));
+  const w = els.pdfWrap;
+  ax ??= w.clientWidth / 2; ay ??= w.clientHeight / 2;
+  const f = z / zoom;
+  const cx = w.scrollLeft + ax, cy = w.scrollTop + ay;
+  zoom = z;
+  buildPages();
+  w.scrollLeft = cx * f - ax;
+  w.scrollTop = cy * f - ay;
+  updatePageLabel();
+}
+const STEPS = [0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3, 4, 5];
+$('zoomIn').onclick = () => setZoom(STEPS.find((s) => s > zoom + 0.01) ?? ZOOM_MAX);
+$('zoomOut').onclick = () => setZoom([...STEPS].reverse().find((s) => s < zoom - 0.01) ?? ZOOM_MIN);
+els.zoomLabel.onclick = () => setZoom(1);
+
+// Two-finger pinch to zoom
+let pinch = null;
+const dist = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+els.pdfWrap.addEventListener('touchstart', (e) => {
+  if (e.touches.length === 2 && pdfPages.length) {
+    const r = els.pdfWrap.getBoundingClientRect();
+    const ax = (e.touches[0].clientX + e.touches[1].clientX) / 2 - r.left;
+    const ay = (e.touches[0].clientY + e.touches[1].clientY) / 2 - r.top;
+    pinch = { d: dist(e.touches), ratio: 1, ax, ay };
+    els.pdfPages.style.transformOrigin = `${els.pdfWrap.scrollLeft + ax}px ${els.pdfWrap.scrollTop + ay}px`;
+  }
+}, { passive: true });
+els.pdfWrap.addEventListener('touchmove', (e) => {
+  if (!pinch || e.touches.length !== 2) return;
+  e.preventDefault();
+  const minR = ZOOM_MIN / zoom, maxR = ZOOM_MAX / zoom;
+  pinch.ratio = Math.min(maxR, Math.max(minR, dist(e.touches) / pinch.d));
+  els.pdfPages.style.transform = `scale(${pinch.ratio})`;
+}, { passive: false });
+els.pdfWrap.addEventListener('touchend', (e) => {
+  if (!pinch || e.touches.length >= 2) return;
+  const { ratio, ax, ay } = pinch;
+  pinch = null;
+  els.pdfPages.style.transform = '';
+  if (Math.abs(ratio - 1) > 0.03) setZoom(zoom * ratio, ax, ay);
+});
+window.addEventListener('resize', () => {
+  if (!pdfDoc || !pdfPages.length) return;
+  const nb = Math.max(0.1, (els.pdfWrap.clientWidth - 16) / pdfPages[0].w);
+  if (Math.abs(nb - baseScale) > 0.01) { baseScale = nb; buildPages(); }
+});
+
+/* ---------- Start ---------- */
+renderList();
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch((e) => console.warn('Offline setup failed', e));
+</script>
+</body>
+</html>
