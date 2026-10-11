@@ -67,6 +67,7 @@
   #docList .open small { color: var(--muted); font-size: 15px; }
   #docList .more { font-size: 24px; line-height: 1; padding: 0; width: 56px; }
   #emptyMsg { color: var(--muted); text-align: center; padding: 30px 20px; }
+  #version { color: var(--muted); font-size: 13px; text-align: center; margin: 0; padding: 6px 0 max(10px, env(safe-area-inset-bottom)); }
 
   #notice {
     display: flex; gap: 10px; align-items: center;
@@ -81,12 +82,14 @@
     flex: 1; width: 100%; border: 0; resize: none; outline: none;
     background: var(--surface); color: var(--text);
     font: 18px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-size: var(--doc-font, 18px);
     padding: 16px; tab-size: 4;
   }
   #editor[hidden] { display: none; }
   #reader {
     flex: 1; overflow-y: auto; background: var(--surface); color: var(--text);
     font: 18px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-size: var(--doc-font, 18px);
     padding: 16px; tab-size: 4; white-space: pre-wrap; overflow-wrap: anywhere;
     -webkit-user-select: text; user-select: text; position: relative;
   }
@@ -122,6 +125,7 @@
   .tools[hidden] { display: none; }
   .tools button { flex: 1; padding: 0 6px; font-size: 17px; }
   .tools button.icon { flex: 0 0 54px; font-size: 22px; }
+  .tools button.size { flex: 0 0 58px; font-size: 18px; font-weight: 600; }
   .tools .label { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 16px; }
 
   dialog {
@@ -160,6 +164,7 @@
   <input type="file" id="fileInput" hidden>
   <ul id="docList"></ul>
   <p id="emptyMsg" hidden>No documents yet.<br>Tap “New” or “Open file”.</p>
+  <p id="version"></p>
 </section>
 
 <!-- Open document -->
@@ -181,6 +186,8 @@
   <textarea id="editor" hidden autocapitalize="sentences" aria-label="Document text"></textarea>
   <div id="pdfWrap" hidden><div id="pdfPages"></div></div>
   <footer id="readTools" class="tools" hidden>
+    <button id="smallerBtn" class="size" aria-label="Smaller text">A−</button>
+    <button id="biggerBtn" class="size" aria-label="Bigger text">A+</button>
     <button id="editBtn" class="primary">Edit</button>
     <button id="exportBtn2">Export</button>
   </footer>
@@ -327,7 +334,7 @@ async function docOptions(doc) {
     if (name !== null && name.trim()) { doc.name = name.trim(); doc.updated = Date.now(); await dbPut(doc); renderList(); }
   } else if (choice === 'delete') {
     const ok = await ask({ title: 'Delete document?', message: `“${doc.name}” will be removed from this app. This can't be undone.`, buttons: [{ label: 'Cancel', value: false }, { label: 'Delete', value: true, danger: true }] });
-    if (ok) { await dbDel(doc.id); renderList(); toast('Deleted'); }
+    if (ok) { await dbDel(doc.id); forgetPos(doc.id); renderList(); toast('Deleted'); }
   }
 }
 
@@ -337,9 +344,21 @@ els.fileInput.onchange = async () => {
   const file = els.fileInput.files[0];
   els.fileInput.value = '';
   if (!file) return;
+  const doc = await importFile(file);
+  if (doc) { renderList(); openDoc(doc); }
+};
+// Files shared from other apps sometimes arrive without an extension, so fall back to the file type.
+const TYPE_EXT = {
+  'text/plain': 'txt', 'text/markdown': 'md', 'text/x-markdown': 'md', 'application/pdf': 'pdf',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+  'application/vnd.oasis.opendocument.text': 'odt',
+};
+// Reads a file and saves it in the app. Returns the new document, or null if it couldn't be opened.
+async function importFile(file) {
   const dot = file.name.lastIndexOf('.');
-  const ext = dot > 0 ? file.name.slice(dot + 1).toLowerCase() : '';
+  let ext = dot > 0 ? file.name.slice(dot + 1).toLowerCase() : '';
   const base = dot > 0 ? file.name.slice(0, dot) : file.name;
+  if (!['txt', 'md', 'markdown', 'docx', 'odt', 'pdf'].includes(ext) && TYPE_EXT[file.type]) ext = TYPE_EXT[file.type];
   const now = Date.now();
   const doc = { id: newId(), name: base || 'Untitled', format: ext, created: now, updated: now, saved: true };
   try {
@@ -364,18 +383,18 @@ els.fileInput.onchange = async () => {
       doc.kind = 'pdf';
       doc.data = new Blob([buf], { type: 'application/pdf' });
     } else {
-      await info('Can’t open this file', 'This app opens .txt, .md, .docx, .odt and .pdf files.' + (ext === 'doc' ? '\n\nOld .doc files aren’t supported — save it as .docx first.' : ''));
-      return;
+      await info('Can’t open “' + file.name + '”', 'This app opens .txt, .md, .docx, .odt and .pdf files.' + (ext === 'doc' ? '\n\nOld .doc files aren’t supported — save it as .docx first.' : ''));
+      return null;
     }
     await dbPut(doc);
     askPersist();
-    renderList();
-    openDoc(doc);
+    return doc;
   } catch (err) {
     console.error(err);
-    await info('Couldn’t open the file', err?.message || String(err));
+    await info('Couldn’t open “' + file.name + '”', err?.message || String(err));
+    return null;
   }
-};
+}
 
 /* ---------- .docx reading (text only) ---------- */
 const W_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
@@ -610,15 +629,19 @@ function openDoc(doc) {
     histReset();
     setMode(doc.saved ? 'read' : 'edit');
     els.editor.scrollTop = els.reader.scrollTop = 0;
+    if (mode === 'read') restoreTextPos();
     if (!doc.saved) els.editor.focus();
   }
+  activity();
 }
 function closeDoc() {
+  savePos();
   if (current?.kind === 'pdf') closePdf();
   closeFind();
   current = null;
   els.editor.value = '';
   els.reader.textContent = '';
+  syncWake();
   showView('list');
   renderList();
 }
@@ -634,6 +657,7 @@ function setMode(m) {
   to.scrollTop = ratio * (to.scrollHeight - to.clientHeight);
   if (find.open && els.findInput.value) runFind(false);
   updateState();
+  syncWake();
 }
 // A new, never-saved document only counts as changed once something is typed.
 const isDirty = () => current && current.kind === 'text' && els.editor.value !== (current.saved ? savedText : '');
@@ -802,6 +826,7 @@ async function showPdf(blob) {
     // Page sizes: most PDFs use one size; fetch the others lazily but use page 1's size as a placeholder.
     pdfPages.forEach((p) => { p.w = vp.width; p.h = vp.height; });
     buildPages();
+    restorePdfPos();
     // Fill in true sizes for pages that differ (cheap, no rendering).
     for (const p of pdfPages.slice(1)) {
       if (token !== pdfToken) return;
@@ -1172,8 +1197,126 @@ function clearPdfHl() {
   for (const d of els.pdfPages.querySelectorAll('.hl')) d.remove();
 }
 
+/* ---------- Remember my place ---------- */
+// Positions are small, so they live in localStorage (on this phone only), one entry per document.
+const posKey = (id) => 'pos:' + id;
+function store(key, val) { try { val === null ? localStorage.removeItem(key) : localStorage.setItem(key, val); } catch {} }
+function load(key) { try { return localStorage.getItem(key); } catch { return null; } }
+function forgetPos(id) { store(posKey(id), null); }
+function savePos() {
+  if (!current?.saved) return;
+  if (current.kind === 'pdf') {
+    if (!pdfPages.length) return;
+    const n = currentPage(), p = pdfPages[n - 1];
+    const wr = els.pdfWrap.getBoundingClientRect(), pr = p.div.getBoundingClientRect();
+    store(posKey(current.id), JSON.stringify({ page: n, frac: Math.max(0, (wr.top - pr.top) / pr.height) }));
+  } else if (mode === 'read') {
+    const r = els.reader;
+    store(posKey(current.id), JSON.stringify({ ratio: r.scrollTop / Math.max(1, r.scrollHeight - r.clientHeight) }));
+  }
+}
+function readPos() { try { return JSON.parse(load(posKey(current.id))) || null; } catch { return null; } }
+function restoreTextPos() {
+  const pos = readPos();
+  if (!pos?.ratio) return;
+  const r = els.reader;
+  r.scrollTop = pos.ratio * (r.scrollHeight - r.clientHeight);
+}
+function restorePdfPos() {
+  const pos = readPos();
+  const p = pos?.page && pdfPages[pos.page - 1];
+  if (!p) return;
+  const wr = els.pdfWrap.getBoundingClientRect(), pr = p.div.getBoundingClientRect();
+  els.pdfWrap.scrollTop += pr.top - wr.top + (pos.frac || 0) * pr.height;
+  updatePageLabel();
+}
+let posTimer;
+const savePosSoon = () => { clearTimeout(posTimer); posTimer = setTimeout(savePos, 400); };
+els.reader.addEventListener('scroll', savePosSoon, { passive: true });
+els.pdfWrap.addEventListener('scroll', savePosSoon, { passive: true });
+// Also save when the app goes to the background (the phone may close it there).
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') savePos(); });
+
+/* ---------- Text size ---------- */
+const SIZES = [14, 16, 18, 20, 22, 24, 27, 30, 34];
+let fontSize = +load('fontSize') || 18;
+function applyFontSize() { document.documentElement.style.setProperty('--doc-font', fontSize + 'px'); }
+function changeFont(dir) {
+  const r = els.reader, ratio = r.scrollTop / Math.max(1, r.scrollHeight - r.clientHeight);
+  const i = SIZES.findIndex((s) => s >= fontSize);
+  fontSize = SIZES[Math.min(SIZES.length - 1, Math.max(0, (i < 0 ? 2 : i) + dir))];
+  store('fontSize', String(fontSize));
+  applyFontSize();
+  r.scrollTop = ratio * (r.scrollHeight - r.clientHeight);
+  toast('Text size ' + Math.round((fontSize / 18) * 100) + '%');
+}
+applyFontSize();
+$('smallerBtn').onclick = () => changeFont(-1);
+$('biggerBtn').onclick = () => changeFont(1);
+
+/* ---------- Keep the screen on while reading ---------- */
+// On while a document is open for reading; lets go after 10 minutes without touching or scrolling.
+const IDLE_MS = 10 * 60 * 1000;
+let wakeLock = null, wakePending = false, lastActive = Date.now();
+const wantWake = () => !!current && (current.kind === 'pdf' || mode === 'read') && document.visibilityState === 'visible' && Date.now() - lastActive < IDLE_MS;
+async function syncWake() {
+  if (!('wakeLock' in navigator)) return;
+  if (wantWake()) {
+    if (wakeLock || wakePending) return;
+    wakePending = true;
+    try {
+      const w = await navigator.wakeLock.request('screen');
+      w.addEventListener('release', () => { if (wakeLock === w) wakeLock = null; });
+      wakeLock = w;
+      if (!wantWake()) syncWake(); // the document was closed while waiting
+    } catch { wakeLock = null; }
+    wakePending = false;
+  } else if (wakeLock) {
+    const w = wakeLock; wakeLock = null;
+    w.release().catch(() => {});
+  }
+}
+const activity = () => { lastActive = Date.now(); syncWake(); };
+for (const ev of ['pointerdown', 'keydown']) document.addEventListener(ev, activity, { passive: true });
+for (const el of [els.reader, els.pdfWrap]) el.addEventListener('scroll', activity, { passive: true });
+document.addEventListener('visibilitychange', syncWake);
+setInterval(syncWake, 30000);
+
+/* ---------- Share to Pocket Docs ---------- */
+// Other apps' "Share" menu sends files here. The offline helper (sw.js) parks them in a small
+// "share-inbox" storage and opens the app with ?shared=1; this picks them up.
+async function receiveShared() {
+  if (!new URLSearchParams(location.search).has('shared')) return;
+  history.replaceState(null, '', location.pathname);
+  let inbox;
+  try { inbox = await caches.open('share-inbox'); } catch { return; }
+  let last = null;
+  for (const req of await inbox.keys()) {
+    const res = await inbox.match(req);
+    await inbox.delete(req);
+    if (!res) continue;
+    if (req.url.endsWith('/__shared/text')) {
+      const { title = '', text = '', url = '' } = await res.json().catch(() => ({}));
+      const body = [text, url && !text.includes(url) ? url : ''].filter(Boolean).join('\n');
+      if (!body.trim()) continue;
+      const now = Date.now();
+      last = { id: newId(), name: (title || body.split('\n')[0]).slice(0, 60).trim() || 'Shared text', kind: 'text', format: 'txt', text: body, created: now, updated: now, saved: true };
+      await dbPut(last);
+    } else {
+      const name = decodeURIComponent(res.headers.get('X-Name') || 'shared');
+      const file = new File([await res.blob()], name, { type: res.headers.get('Content-Type') || '' });
+      last = (await importFile(file)) || last;
+    }
+  }
+  await renderList();
+  if (last) openDoc(last);
+}
+
 /* ---------- Start ---------- */
+const APP_VERSION = 3; // keep in step with VERSION in sw.js
+$('version').textContent = 'Pocket Docs · version ' + APP_VERSION;
 renderList();
+receiveShared();
 if ('serviceWorker' in navigator) {
   // When an update of the app arrives, reload — but only on the document list, so nothing unsaved is lost.
   const hadWorker = !!navigator.serviceWorker.controller;
