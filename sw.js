@@ -1,6 +1,6 @@
 // Offline support: stores every app file on the phone the first time the app opens.
 // To publish an update later, change VERSION (e.g. 'pocketdocs-v2') and upload the changed files.
-const VERSION = 'pocketdocs-v6';
+const VERSION = 'pocketdocs-v7';
 const FILES = [
   './', 'index.html', 'manifest.json', 'logo-192.png', 'logo-512.png', 'logo-maskable.png',
   'jszip.min.js', 'pdf.min.js', 'pdf.worker.min.js',
