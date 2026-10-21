@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="robots" content="noindex">
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#f6f6f4" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#18181a" media="(prefers-color-scheme: dark)">
@@ -163,7 +164,7 @@
   </div>
   <input type="file" id="fileInput" hidden>
   <ul id="docList"></ul>
-  <p id="emptyMsg" hidden>No documents yet.<br>Tap “New” or “Open file”.</p>
+  <p id="emptyMsg" hidden>No documents yet.<br>Tap “New” or “Open file”.<br>Documents are saved only in this browser. Clearing site data deletes them.</p>
   <p id="version"></p>
 </section>
 
@@ -206,13 +207,13 @@
   </footer>
 </section>
 
-<dialog id="dlg">
+<dialog id="dlg" aria-labelledby="dlgTitle">
   <h3 id="dlgTitle"></h3>
   <p id="dlgMsg"></p>
-  <input id="dlgInput" type="text" autocomplete="off">
+  <input id="dlgInput" type="text" autocomplete="off" aria-label="Name">
   <div class="btns" id="dlgBtns"></div>
 </dialog>
-<div id="toast"></div>
+<div id="toast" role="status"></div>
 
 <script src="jszip.min.js"></script>
 <script type="module">
@@ -353,8 +354,13 @@ const TYPE_EXT = {
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
   'application/vnd.oasis.opendocument.text': 'odt',
 };
+const MAX_FILE = 100 * 1024 * 1024; // 100 MB
 // Reads a file and saves it in the app. Returns the new document, or null if it couldn't be opened.
 async function importFile(file) {
+  if (file.size > MAX_FILE) {
+    await info('File too large', '“' + file.name + '” is bigger than 100 MB. Pocket Docs can’t open it.');
+    return null;
+  }
   const dot = file.name.lastIndexOf('.');
   let ext = dot > 0 ? file.name.slice(dot + 1).toLowerCase() : '';
   const base = dot > 0 ? file.name.slice(0, dot) : file.name;
@@ -1235,7 +1241,12 @@ const savePosSoon = () => { clearTimeout(posTimer); posTimer = setTimeout(savePo
 els.reader.addEventListener('scroll', savePosSoon, { passive: true });
 els.pdfWrap.addEventListener('scroll', savePosSoon, { passive: true });
 // Also save when the app goes to the background (the phone may close it there).
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') savePos(); });
+// A document that was never saved stays unsaved (it needs a name first); only its position is kept.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'hidden') return;
+  savePos();
+  if (current?.saved && isDirty()) save();
+});
 
 /* ---------- Text size ---------- */
 const SIZES = [14, 16, 18, 20, 22, 24, 27, 30, 34];
@@ -1285,6 +1296,9 @@ setInterval(syncWake, 30000);
 /* ---------- Share to Pocket Docs ---------- */
 // Other apps' "Share" menu sends files here. The offline helper (sw.js) parks them in a small
 // "share-inbox" storage and opens the app with ?shared=1; this picks them up.
+// Any website can send a file to that address, so each item is imported only after "Add <name>?".
+// Cancel leaves it out: the item is already removed from the inbox before the question.
+const askAdd = (name) => ask({ title: 'Add ' + name + '?', message: 'This was shared with Pocket Docs.', buttons: [{ label: 'Cancel', value: false }, { label: 'Add', value: true, primary: true }] });
 async function receiveShared() {
   if (!new URLSearchParams(location.search).has('shared')) return;
   history.replaceState(null, '', location.pathname);
@@ -1299,11 +1313,14 @@ async function receiveShared() {
       const { title = '', text = '', url = '' } = await res.json().catch(() => ({}));
       const body = [text, url && !text.includes(url) ? url : ''].filter(Boolean).join('\n');
       if (!body.trim()) continue;
+      const textName = (title || body.split('\n')[0]).slice(0, 60).trim() || 'Shared text';
+      if (!(await askAdd(textName))) continue;
       const now = Date.now();
-      last = { id: newId(), name: (title || body.split('\n')[0]).slice(0, 60).trim() || 'Shared text', kind: 'text', format: 'txt', text: body, created: now, updated: now, saved: true };
+      last = { id: newId(), name: textName, kind: 'text', format: 'txt', text: body, created: now, updated: now, saved: true };
       await dbPut(last);
     } else {
       const name = decodeURIComponent(res.headers.get('X-Name') || 'shared');
+      if (!(await askAdd(name))) continue;
       const file = new File([await res.blob()], name, { type: res.headers.get('Content-Type') || '' });
       last = (await importFile(file)) || last;
     }
@@ -1313,10 +1330,12 @@ async function receiveShared() {
 }
 
 /* ---------- Start ---------- */
-const APP_VERSION = 7; // keep in step with VERSION in sw.js
+const APP_VERSION = 8; // keep in step with VERSION in sw.js
 $('version').textContent = 'Pocket Docs · version ' + APP_VERSION;
-renderList();
-receiveShared();
+askPersist();
+const storageFailed = () => { $('emptyMsg').textContent = 'Storage unavailable'; $('emptyMsg').hidden = false; };
+renderList().catch(storageFailed);
+receiveShared().catch(() => toast('Storage unavailable'));
 if ('serviceWorker' in navigator) {
   // When an update of the app arrives, reload — but only on the document list, so nothing unsaved is lost.
   const hadWorker = !!navigator.serviceWorker.controller;

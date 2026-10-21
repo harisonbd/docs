@@ -1,6 +1,7 @@
 // Offline support: stores every app file on the phone the first time the app opens.
 // To publish an update later, change VERSION (e.g. 'pocketdocs-v2') and upload the changed files.
-const VERSION = 'pocketdocs-v7';
+const VERSION = 'pocketdocs-v8';
+const MAX_FILE = 100 * 1024 * 1024; // shared files over 100 MB are skipped
 const FILES = [
   './', 'index.html', 'manifest.json', 'logo-192.png', 'logo-512.png', 'logo-maskable.png',
   'jszip.min.js', 'pdf.min.js', 'pdf.worker.min.js',
@@ -18,18 +19,20 @@ self.addEventListener('install', (e) => {
 self.addEventListener('activate', (e) => {
   e.waitUntil(
     caches.keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== VERSION && k !== 'share-inbox').map((k) => caches.delete(k))))
+      // Only our own old caches. Other apps on this origin (label-check, Sun Launcher) keep theirs.
+      .then((keys) => Promise.all(keys.filter((k) => k.startsWith('pocketdocs-') && k !== VERSION).map((k) => caches.delete(k))))
       .then(() => self.clients.claim())
   );
 });
 
 // "Share to Pocket Docs": Android sends shared files here. Park them, then open the app,
-// which imports them (see receiveShared in index.html). Nothing leaves the phone.
+// which asks "Add <name>?" before importing them (see receiveShared in index.html), because
+// any website can send a file to this address. Nothing leaves the phone.
 async function receiveShare(req) {
   try {
     const form = await req.formData();
     const inbox = await caches.open('share-inbox');
-    const files = form.getAll('file').filter((f) => f && typeof f !== 'string' && f.size > 0);
+    const files = form.getAll('file').filter((f) => f && typeof f !== 'string' && f.size > 0 && f.size <= MAX_FILE);
     let i = 0;
     for (const f of files) {
       await inbox.put(new Request(`./__shared/${Date.now()}-${i++}`), new Response(f, {
