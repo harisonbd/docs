@@ -128,6 +128,7 @@
   .tools button.icon { flex: 0 0 54px; font-size: 22px; }
   .tools button.size { flex: 0 0 58px; font-size: 18px; font-weight: 600; }
   .tools .label { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 16px; }
+  .tools button.label { background: none; border-color: transparent; }
 
   dialog {
     border: 1px solid var(--line); border-radius: 16px; padding: 20px;
@@ -203,7 +204,7 @@
     <button id="zoomOut" aria-label="Zoom out">−</button>
     <button id="zoomLabel" aria-label="Reset zoom">100%</button>
     <button id="zoomIn" aria-label="Zoom in">+</button>
-    <span id="pageLabel" class="label"></span>
+    <button id="pageLabel" class="label" aria-label="Go to page"></button>
   </footer>
 </section>
 
@@ -264,7 +265,7 @@ const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2
 /* ---------- Small UI helpers ---------- */
 const dlg = $('dlg');
 let dlgResolve = null;
-function ask({ title, message = '', input = null, buttons }) {
+function ask({ title, message = '', input = null, inputMode = 'text', buttons }) {
   if (dlgResolve) { dlgResolve(null); dlgResolve = null; if (dlg.open) dlg.close(); }
   $('dlgTitle').textContent = title;
   $('dlgMsg').textContent = message;
@@ -272,6 +273,7 @@ function ask({ title, message = '', input = null, buttons }) {
   const inp = $('dlgInput');
   inp.hidden = input === null;
   inp.value = input ?? '';
+  inp.inputMode = inputMode;
   const box = $('dlgBtns');
   box.replaceChildren();
   return new Promise((resolve) => {
@@ -928,6 +930,18 @@ function updatePageLabel() {
   els.pageLabel.textContent = `${currentPage()} / ${pdfPages.length}`;
 }
 els.pdfWrap.addEventListener('scroll', updatePageLabel, { passive: true });
+// Tap the page label to jump to a page; numbers out of range go to the first or last page.
+els.pageLabel.onclick = async () => {
+  if (!pdfPages.length) return;
+  const token = pdfToken;
+  const v = await ask({ title: 'Go to page', input: String(currentPage()), inputMode: 'numeric', buttons: [{ label: 'Cancel', value: null }, { label: 'Go', value: '__input__', primary: true }] });
+  const n = parseInt(v, 10);
+  if (token !== pdfToken || !pdfPages.length || isNaN(n)) return;
+  const p = pdfPages[Math.min(pdfPages.length, Math.max(1, n)) - 1];
+  const wr = els.pdfWrap.getBoundingClientRect(), pr = p.div.getBoundingClientRect();
+  els.pdfWrap.scrollTop += pr.top - wr.top;
+  updatePageLabel();
+};
 
 function setZoom(z, ax, ay) {
   if (!pdfPages.length) return;
@@ -1330,7 +1344,7 @@ async function receiveShared() {
 }
 
 /* ---------- Start ---------- */
-const APP_VERSION = 8; // keep in step with VERSION in sw.js
+const APP_VERSION = 9; // keep in step with VERSION in sw.js
 $('version').textContent = 'Pocket Docs · version ' + APP_VERSION;
 askPersist();
 const storageFailed = () => { $('emptyMsg').textContent = 'Storage unavailable'; $('emptyMsg').hidden = false; };
