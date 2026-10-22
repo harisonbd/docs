@@ -64,7 +64,8 @@
   #docList .open {
     flex: 1; min-width: 0; text-align: left; padding: 10px 16px; min-height: 64px;
   }
-  #docList .open b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+  /* Up to 2 lines, so names that differ only at the end can be told apart */
+  #docList .open b { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; font-weight: 600; }
   #docList .open small { color: var(--muted); font-size: 15px; }
   #docList .more { font-size: 24px; line-height: 1; padding: 0; width: 56px; }
   #emptyMsg { color: var(--muted); text-align: center; padding: 30px 20px; }
@@ -1344,7 +1345,7 @@ async function receiveShared() {
 }
 
 /* ---------- Start ---------- */
-const APP_VERSION = 9; // keep in step with VERSION in sw.js
+const APP_VERSION = 10; // keep in step with VERSION in sw.js
 $('version').textContent = 'Pocket Docs · version ' + APP_VERSION;
 askPersist();
 const storageFailed = () => { $('emptyMsg').textContent = 'Storage unavailable'; $('emptyMsg').hidden = false; };
