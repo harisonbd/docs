@@ -121,6 +121,24 @@
   .page canvas { display: block; width: 100%; height: 100%; }
   #pdfStatus { color: var(--muted); text-align: center; padding: 30px 20px; }
 
+  /* Spreadsheets: a table with column letters on top and row numbers on the left (both stay in view) */
+  #sheetWrap { flex: 1; overflow: auto; background: var(--surface); -webkit-user-select: text; user-select: text; }
+  #sheetWrap[hidden] { display: none; }
+  #sheetTable { border-collapse: separate; border-spacing: 0; font-size: calc(var(--doc-font, 18px) * .85); line-height: 1.35; }
+  #sheetTable th, #sheetTable td { border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 6px 8px; text-align: left; vertical-align: top; }
+  #sheetTable td { min-width: 3em; max-width: 14em; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surface); color: var(--text); }
+  #sheetTable td.n { text-align: right; white-space: nowrap; }
+  #sheetTable th { position: sticky; z-index: 1; background: var(--bg); color: var(--muted); font-weight: 400; }
+  #sheetTable thead th { top: 0; z-index: 2; text-align: center; }
+  #sheetTable tbody th { left: 0; text-align: right; }
+  #sheetTable thead th:first-child { left: 0; z-index: 3; }
+  #sheetWrap.editing td { cursor: pointer; }
+  #sheetWrap.editing td:active { outline: 2px solid var(--accent); outline-offset: -2px; }
+  #sheetTable td.hit { background: #ffe066; color: #1c1c1e; }
+  #sheetTable td.hit.cur { background: #ff9f1c; }
+  #sheetNote { color: var(--muted); padding: 12px 16px; margin: 0; font-size: 15px; }
+  #sheetNote:empty { display: none; }
+
   .tools {
     display: flex; gap: 8px; padding: 8px 10px;
     padding-bottom: max(8px, env(safe-area-inset-bottom));
@@ -193,6 +211,7 @@
   <div id="reader" hidden></div>
   <textarea id="editor" hidden autocapitalize="sentences" aria-label="Document text"></textarea>
   <div id="pdfWrap" hidden><div id="pdfPages"></div></div>
+  <div id="sheetWrap" hidden><table id="sheetTable"></table><p id="sheetNote"></p></div>
   <footer id="readTools" class="tools" hidden>
     <button id="smallerBtn" class="size" aria-label="Smaller text">A−</button>
     <button id="biggerBtn" class="size" aria-label="Bigger text">A+</button>
@@ -205,6 +224,9 @@
     <button id="saveBtn" class="primary">Save</button>
     <button id="exportBtn">Export</button>
     <button id="doneBtn">Done</button>
+  </footer>
+  <footer id="sheetTools" class="tools" hidden>
+    <button id="sheetDone" class="primary">Done</button>
   </footer>
   <footer id="pdfTools" class="tools" hidden>
     <button id="zoomOut" aria-label="Zoom out">−</button>
@@ -232,6 +254,7 @@ const els = {
   zoomLabel: $('zoomLabel'), pageLabel: $('pageLabel'),
   reader: $('reader'), readTools: $('readTools'),
   findBar: $('findBar'), findInput: $('findInput'), findCount: $('findCount'),
+  sheetWrap: $('sheetWrap'), sheetTable: $('sheetTable'), sheetNote: $('sheetNote'), sheetTools: $('sheetTools'),
 };
 
 /* ---------- Storage (IndexedDB: stays on this phone only) ---------- */
@@ -306,7 +329,7 @@ function toast(msg) {
   clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 1600);
 }
 const fmtDate = (ms) => new Date(ms).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
-const KIND_LABEL = { txt: 'Text', md: 'Markdown', docx: 'Word', odt: 'ODT', pdf: 'PDF' };
+const KIND_LABEL = { txt: 'Text', md: 'Markdown', docx: 'Word', odt: 'ODT', pdf: 'PDF', xlsx: 'Excel', xls: 'Excel', ods: 'ODS' };
 
 /* ---------- Document list ---------- */
 async function renderList() {
@@ -360,7 +383,38 @@ const TYPE_EXT = {
   'text/plain': 'txt', 'text/markdown': 'md', 'text/x-markdown': 'md', 'application/pdf': 'pdf',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
   'application/vnd.oasis.opendocument.text': 'odt',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+  'application/vnd.ms-excel': 'xls',
+  'application/vnd.oasis.opendocument.spreadsheet': 'ods',
 };
+const SHEET_TYPES = {
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  xls: 'application/vnd.ms-excel',
+  ods: 'application/vnd.oasis.opendocument.spreadsheet',
+};
+// The spreadsheet reader (SheetJS, about 1 MB) loads only when a spreadsheet is opened.
+let xlsxPromise = null;
+function loadXlsx() {
+  xlsxPromise ??= new Promise((resolve, reject) => {
+    if (window.XLSX) return resolve(window.XLSX);
+    const s = document.createElement('script');
+    s.src = 'xlsx.full.min.js';
+    s.onload = () => (window.XLSX ? resolve(window.XLSX) : reject(new Error('The spreadsheet reader could not be loaded.')));
+    s.onerror = () => { xlsxPromise = null; reject(new Error('The spreadsheet reader could not be loaded.')); };
+    document.head.append(s);
+  });
+  return xlsxPromise;
+}
+// Reads a spreadsheet file; turns the library's errors into a plain message.
+async function readWorkbook(data, opts) {
+  const X = await loadXlsx();
+  try { return X.read(data, { type: 'array', ...opts }); }
+  catch (err) {
+    console.error(err);
+    if (/password|encrypt/i.test(err?.message || '')) throw new Error('This spreadsheet is password-protected and can’t be opened here.');
+    throw new Error('This file seems to be damaged, or it is not a spreadsheet.');
+  }
+}
 const MAX_FILE = 100 * 1024 * 1024; // 100 MB
 // Reads a file and saves it in the app. Returns the new document, or null if it couldn't be opened.
 async function importFile(file) {
@@ -371,7 +425,7 @@ async function importFile(file) {
   const dot = file.name.lastIndexOf('.');
   let ext = dot > 0 ? file.name.slice(dot + 1).toLowerCase() : '';
   const base = dot > 0 ? file.name.slice(0, dot) : file.name;
-  if (!['txt', 'md', 'markdown', 'docx', 'odt', 'pdf'].includes(ext) && TYPE_EXT[file.type]) ext = TYPE_EXT[file.type];
+  if (!['txt', 'md', 'markdown', 'docx', 'odt', 'pdf', 'xlsx', 'xls', 'ods'].includes(ext) && TYPE_EXT[file.type]) ext = TYPE_EXT[file.type];
   const now = Date.now();
   const doc = { id: newId(), name: base || 'Untitled', format: ext, created: now, updated: now, saved: true };
   try {
@@ -395,8 +449,21 @@ async function importFile(file) {
       if (!head.includes('%PDF')) throw new Error('This file does not look like a PDF.');
       doc.kind = 'pdf';
       doc.data = new Blob([buf], { type: 'application/pdf' });
+    } else if (SHEET_TYPES[ext]) {
+      // The file is kept as it is; changed cells are kept separately (doc.edits) and put in on opening and export.
+      const buf = await file.arrayBuffer();
+      // SheetJS opens almost anything as text, so check the start of the file first:
+      // .xlsx/.ods are ZIP files ("PK"); .xls is an Office file (D0 CF 11 E0) or, from some programs, HTML/XML.
+      const b = new Uint8Array(buf, 0, Math.min(512, buf.byteLength));
+      const zip = b[0] === 0x50 && b[1] === 0x4b, cfb = b[0] === 0xd0 && b[1] === 0xcf && b[2] === 0x11 && b[3] === 0xe0;
+      const markup = /^(﻿)?\s*</.test(new TextDecoder('utf-8').decode(b));
+      if (ext === 'xls' ? !(cfb || markup || zip) : !zip) throw new Error('This file seems to be damaged, or it is not a spreadsheet.');
+      await readWorkbook(buf, { bookSheets: true }); // quick check that it opens
+      doc.kind = 'sheet';
+      doc.data = new Blob([buf], { type: SHEET_TYPES[ext] });
+      doc.edits = {};
     } else {
-      await info('Can’t open “' + file.name + '”', 'This app opens .txt, .md, .docx, .odt and .pdf files.' + (ext === 'doc' ? '\n\nOld .doc files aren’t supported — save it as .docx first.' : ''));
+      await info('Can’t open “' + file.name + '”', 'This app opens .txt, .md, .docx, .odt, .pdf, .xlsx, .xls and .ods files.' + (ext === 'doc' ? '\n\nOld .doc files aren’t supported — save it as .docx first.' : ''));
       return null;
     }
     await dbPut(doc);
@@ -627,15 +694,19 @@ function openDoc(doc) {
   closeFind();
   els.docTitle.textContent = doc.name;
   els.pageLabel.textContent = '';
-  const isPdf = doc.kind === 'pdf';
-  els.editor.hidden = els.reader.hidden = els.textTools.hidden = els.readTools.hidden = true;
+  const isPdf = doc.kind === 'pdf', isSheet = doc.kind === 'sheet';
+  els.editor.hidden = els.reader.hidden = els.textTools.hidden = els.readTools.hidden = els.sheetTools.hidden = true;
   els.pdfWrap.hidden = !isPdf; els.pdfTools.hidden = !isPdf;
+  els.sheetWrap.hidden = !isSheet;
   setNotice(doc.notice || '');
   showView('doc');
   history.pushState({ doc: doc.id }, '');
   if (isPdf) {
     els.docState.textContent = 'PDF · view only';
     showPdf(doc.data);
+  } else if (isSheet) {
+    setMode('read');
+    showSheet(doc);
   } else {
     savedText = doc.saved ? doc.text : null;
     els.editor.value = doc.text || '';
@@ -653,6 +724,7 @@ function closeDoc() {
   savePos();
   if (current?.kind === 'pdf') closePdf();
   closeFind();
+  closeSheet();
   current = null;
   els.editor.value = '';
   els.reader.textContent = '';
@@ -661,6 +733,17 @@ function closeDoc() {
   renderList();
 }
 function setMode(m) {
+  if (current?.kind === 'sheet') {
+    // Spreadsheets: same table in both modes; in edit mode a tap on a cell changes it.
+    mode = m;
+    els.readTools.hidden = m !== 'read';
+    els.sheetTools.hidden = m !== 'edit';
+    els.sheetWrap.classList.toggle('editing', m === 'edit');
+    updateState();
+    updatePageLabel();
+    syncWake();
+    return;
+  }
   // Keep roughly the same place in the text when switching.
   const from = mode === 'edit' ? els.editor : els.reader;
   const ratio = from.scrollTop / Math.max(1, from.scrollHeight - from.clientHeight);
@@ -678,6 +761,10 @@ function setMode(m) {
 // A new, never-saved document only counts as changed once something is typed.
 const isDirty = () => current && current.kind === 'text' && els.editor.value !== (current.saved ? savedText : '');
 function updateState() {
+  if (current?.kind === 'sheet') {
+    els.docState.textContent = (KIND_LABEL[current.format] || 'Sheet') + (mode === 'read' ? ' · reading' : ' · tap a cell to change it');
+    return;
+  }
   if (!current || current.kind !== 'text') return;
   const label = KIND_LABEL[current.format] || 'Text';
   if (mode === 'read') { els.docState.textContent = label + ' · reading'; return; }
@@ -744,7 +831,7 @@ window.addEventListener('popstate', async () => {
 
 /* ---------- Export ---------- */
 function safeName(name) {
-  return (name.replace(/\.(txt|md|markdown|docx|odt|pdf)$/i, '').replace(/[\\/:*?"<>|]+/g, '_').trim() || 'document');
+  return (name.replace(/\.(txt|md|markdown|docx|odt|pdf|xlsx|xls|ods)$/i, '').replace(/[\\/:*?"<>|]+/g, '_').trim() || 'document');
 }
 function download(blob, filename) {
   const a = document.createElement('a');
@@ -755,6 +842,7 @@ function download(blob, filename) {
 }
 $('exportBtn').onclick = $('exportBtn2').onclick = async () => {
   if (!current) return;
+  if (current.kind === 'sheet') return exportSheet();
   const fmt = await ask({
     title: 'Export as…',
     message: 'The file goes to your phone’s Downloads folder.\n.docx and .odt exports contain plain text only.',
@@ -770,6 +858,138 @@ $('exportBtn').onclick = $('exportBtn2').onclick = async () => {
     toast('Exported ' + name);
   } catch (err) { info('Export failed', err?.message || String(err)); }
 };
+
+/* ---------- Spreadsheets (.xlsx .xls .ods): view, change values, export ---------- */
+// sheet = { doc, wb (the workbook with your changes put in), idx (the sheet on screen) }
+let sheet = null, sheetToken = 0;
+const MAX_ROWS = 2000, MAX_COLS = 60; // bigger sheets make a phone slow; the rest is cut off with a note
+const escHtml = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+function cellText(c) {
+  if (!c || c.v === undefined || c.v === null) return '';
+  if (c.w !== undefined) return String(c.w);
+  try { return XLSX.utils.format_cell(c); } catch { return String(c.v); }
+}
+function putEdits(wb, edits) {
+  for (const [name, cells] of Object.entries(edits || {})) {
+    const ws = wb.Sheets[name];
+    if (!ws) continue;
+    for (const [addr, c] of Object.entries(cells)) {
+      if (c) ws[addr] = { ...c }; else delete ws[addr];
+    }
+  }
+}
+async function showSheet(doc) {
+  const token = ++sheetToken;
+  sheet = null;
+  els.sheetTable.replaceChildren();
+  els.sheetNote.textContent = 'Opening spreadsheet…';
+  try {
+    const wb = await readWorkbook(await doc.data.arrayBuffer(), { cellFormula: true, cellNF: true });
+    if (token !== sheetToken || current !== doc) return;
+    putEdits(wb, doc.edits);
+    const pos = readPos();
+    sheet = { doc, wb, idx: pos?.sheet >= 0 && pos.sheet < wb.SheetNames.length ? pos.sheet : 0 };
+    renderSheet();
+    if (pos?.sheet === sheet.idx) { els.sheetWrap.scrollTop = pos.top || 0; els.sheetWrap.scrollLeft = pos.left || 0; }
+  } catch (err) {
+    if (token !== sheetToken) return;
+    console.error(err);
+    els.sheetNote.textContent = 'This spreadsheet could not be displayed. ' + (err?.message || '');
+  }
+  updatePageLabel();
+}
+function closeSheet() {
+  sheetToken++;
+  sheet = null;
+  els.sheetTable.replaceChildren();
+  els.sheetNote.textContent = '';
+}
+function renderSheet() {
+  const ws = sheet.wb.Sheets[sheet.wb.SheetNames[sheet.idx]];
+  const ref = ws?.['!ref'];
+  els.sheetWrap.scrollTop = els.sheetWrap.scrollLeft = 0;
+  if (!ref) { els.sheetTable.replaceChildren(); els.sheetNote.textContent = 'This sheet is empty.'; return; }
+  const r = XLSX.utils.decode_range(ref);
+  const rows = Math.min(r.e.r + 1, MAX_ROWS), cols = Math.min(r.e.c + 1, MAX_COLS);
+  const letters = [];
+  for (let c = 0; c < cols; c++) letters.push(XLSX.utils.encode_col(c));
+  let html = '<thead><tr><th></th>' + letters.map((l) => '<th>' + l + '</th>').join('') + '</tr></thead><tbody>';
+  for (let row = 0; row < rows; row++) {
+    html += '<tr><th>' + (row + 1) + '</th>';
+    for (let c = 0; c < cols; c++) {
+      const addr = letters[c] + (row + 1), cell = ws[addr];
+      html += '<td data-a="' + addr + '"' + (cell?.t === 'n' ? ' class="n"' : '') + '>' + escHtml(cellText(cell)) + '</td>';
+    }
+    html += '</tr>';
+  }
+  els.sheetTable.innerHTML = html + '</tbody>';
+  const cut = [];
+  if (r.e.r + 1 > MAX_ROWS) cut.push(`the first ${MAX_ROWS.toLocaleString()} of ${(r.e.r + 1).toLocaleString()} rows`);
+  if (r.e.c + 1 > MAX_COLS) cut.push(`the first ${MAX_COLS} of ${r.e.c + 1} columns`);
+  els.sheetNote.textContent = cut.length ? 'Showing ' + cut.join(' and ') + '. Export keeps everything.' : '';
+}
+function goToSheet(i) {
+  if (!sheet || i === sheet.idx) return;
+  sheet.idx = i;
+  renderSheet();
+  if (find.open && els.findInput.value) runFind(false);
+  updatePageLabel();
+  savePosSoon();
+}
+// Edit mode: tap a cell to change its value. Formulas are shown, not changed.
+els.sheetTable.addEventListener('click', async (e) => {
+  if (!sheet || mode !== 'edit') return;
+  const td = e.target.closest('td[data-a]');
+  if (!td) return;
+  const doc = current, s = sheet, name = s.wb.SheetNames[s.idx], ws = s.wb.Sheets[name], addr = td.dataset.a;
+  const old = ws[addr];
+  if (old?.f) {
+    await info('This cell is a formula', '=' + old.f + '\n\nFormulas can’t be changed here. The value stays as saved in the file.');
+    return;
+  }
+  // Plain numbers start as the bare number (1045.5, not "€1,045.50"); dates and text as shown.
+  const start = old?.t === 'n' && !(old.z && XLSX.SSF.is_date(old.z)) ? String(old.v) : cellText(old);
+  const v = await ask({ title: 'Cell ' + addr, input: start, buttons: [{ label: 'Cancel', value: null }, { label: 'Save', value: '__input__', primary: true }] });
+  if (v === null || v === start || current !== doc || sheet !== s) return;
+  const t = v.trim();
+  if (t.startsWith('=')) { await info('Formulas can’t be added here', 'Type a value, like 25 or Rent.'); return; }
+  let cell = null;
+  if (t !== '') {
+    if (/^[-+]?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?$/i.test(t)) { cell = { t: 'n', v: Number(t) }; if (old?.z) cell.z = old.z; }
+    else cell = { t: 's', v };
+  }
+  if (cell) ws[addr] = { ...cell }; else delete ws[addr];
+  doc.edits ??= {};
+  (doc.edits[name] ??= {})[addr] = cell;
+  doc.updated = Date.now();
+  try { await dbPut(doc); }
+  catch (err) { await info('Couldn’t save', err?.message || String(err)); return; }
+  td.textContent = cellText(ws[addr]);
+  td.classList.toggle('n', cell?.t === 'n');
+  toast('Saved');
+});
+$('sheetDone').onclick = () => setMode('read');
+// Export: same file type as the original, with your changes. The free SheetJS doesn't keep colours or bold text.
+async function exportSheet() {
+  if (!sheet) return;
+  let fmt = current.format;
+  const where = 'The file goes to your phone’s Downloads folder.\n';
+  const notKept = ' Colours, bold text and column widths are not kept.';
+  if (fmt === 'xls') {
+    // SheetJS can't write formulas into old .xls files, so offer .xlsx too, which keeps them.
+    fmt = await ask({ title: 'Export as…', message: where + '.xls: formulas become fixed values.\n.xlsx: formulas are kept.' + notKept, buttons: [{ label: '.xls (values only)', value: 'xls' }, { label: '.xlsx (keeps formulas)', value: 'xlsx', primary: true }, { label: 'Cancel', value: null }] });
+  } else {
+    const ok = await ask({ title: 'Export ' + safeName(current.name) + '.' + fmt + '?', message: where + 'Values and formulas are kept.' + notKept, buttons: [{ label: 'Cancel', value: false }, { label: 'Export', value: true, primary: true }] });
+    if (!ok) fmt = null;
+  }
+  if (!fmt || !sheet) return;
+  const name = safeName(current.name) + '.' + fmt;
+  try {
+    const out = XLSX.write(sheet.wb, { bookType: fmt, type: 'array', compression: true });
+    download(new Blob([out], { type: SHEET_TYPES[fmt] }), name);
+    toast('Exported ' + name);
+  } catch (err) { console.error(err); info('Export failed', err?.message || String(err)); }
+}
 
 /* ---------- Undo / redo ---------- */
 let hist = [], hpos = 0, pendingHist = false, histTimer;
@@ -944,6 +1164,8 @@ function updatePageLabel() {
   let text = '';
   if (current?.kind === 'pdf') {
     if (pdfPages.length) text = `${currentPage()} / ${pdfPages.length}`;
+  } else if (current?.kind === 'sheet') {
+    if (sheet && mode === 'read') text = `Sheet ${sheet.idx + 1} / ${sheet.wb.SheetNames.length}`;
   } else if (current && mode === 'read') { // hidden while editing
     const s = textScreens();
     text = `${s.n} / ${s.total}`;
@@ -957,6 +1179,14 @@ new ResizeObserver(() => updatePageLabel()).observe(els.reader);
 // Tap the number to jump to a page (PDF) or screen (text); numbers out of range go to the first or last one.
 els.pageLabel.onclick = async () => {
   const doc = current, isPdf = doc?.kind === 'pdf';
+  if (doc?.kind === 'sheet') {
+    // Spreadsheets: pick a sheet by its name.
+    if (!sheet) return;
+    const s = sheet;
+    const i = await ask({ title: 'Go to sheet', buttons: [...s.wb.SheetNames.map((n, k) => ({ label: `${k + 1}. ${n}`, value: k, primary: k === s.idx })), { label: 'Cancel', value: null }] });
+    if (i !== null && sheet === s) goToSheet(i);
+    return;
+  }
   if (!doc || (isPdf && !pdfPages.length)) return;
   const token = pdfToken;
   const v = await ask({ title: isPdf ? 'Go to page' : 'Go to screen', input: String(isPdf ? currentPage() : textScreens().n), inputMode: 'numeric', buttons: [{ label: 'Cancel', value: null }, { label: 'Go', value: '__input__', primary: true }] });
@@ -1055,6 +1285,7 @@ function closeFind() {
   find.q = ''; find.re = null; find.hits = []; find.idx = -1;
   els.findCount.textContent = '';
   clearPdfHl();
+  clearSheetHl();
   if (current?.kind === 'text' && mode === 'read') renderReader();
 }
 $('findBtn').onclick = () => (find.open ? closeFind() : openFind());
@@ -1080,7 +1311,24 @@ async function runFind(navigate) {
   find.q = q; find.hits = []; find.idx = -1;
   find.re = q.trim() ? makeRe(q) : null;
   clearPdfHl();
+  clearSheetHl();
   if (!current) return;
+  if (current.kind === 'sheet') {
+    // Cells of the sheet on screen whose text matches; the first one at or below where you are.
+    if (find.re) {
+      for (const td of els.sheetTable.querySelectorAll('td[data-a]')) {
+        find.re.lastIndex = 0;
+        if (td.textContent && find.re.test(td.textContent) && find.hits.length < MAX_HITS) { td.classList.add('hit'); find.hits.push(td); }
+      }
+    }
+    if (find.hits.length) {
+      const top = els.sheetWrap.scrollTop;
+      const i = find.hits.findIndex((td) => td.offsetTop >= top);
+      find.idx = i < 0 ? 0 : i;
+    }
+    showSheetHit();
+    return;
+  }
   if (current.kind === 'pdf') {
     if (!find.re) { updateCount(); return; }
     let pages;
@@ -1119,7 +1367,20 @@ function step(dir) {
   const n = find.hits.length;
   if (!n) return;
   find.idx = (find.idx + dir + n) % n;
-  current.kind === 'pdf' ? showPdfHit() : showTextHit();
+  current.kind === 'pdf' ? showPdfHit() : current.kind === 'sheet' ? showSheetHit() : showTextHit();
+}
+
+/* Spreadsheets */
+function showSheetHit() {
+  updateCount();
+  els.sheetTable.querySelector('td.cur')?.classList.remove('cur');
+  const td = find.hits[find.idx];
+  if (!td) return;
+  td.classList.add('cur');
+  td.scrollIntoView({ block: 'center', inline: 'center' });
+}
+function clearSheetHl() {
+  for (const td of els.sheetTable.querySelectorAll('td.hit')) td.classList.remove('hit', 'cur');
 }
 
 /* Text documents */
@@ -1262,6 +1523,9 @@ function savePos() {
     const n = currentPage(), p = pdfPages[n - 1];
     const wr = els.pdfWrap.getBoundingClientRect(), pr = p.div.getBoundingClientRect();
     store(posKey(current.id), JSON.stringify({ page: n, frac: Math.max(0, (wr.top - pr.top) / pr.height) }));
+  } else if (current.kind === 'sheet') {
+    if (!sheet) return;
+    store(posKey(current.id), JSON.stringify({ sheet: sheet.idx, top: els.sheetWrap.scrollTop, left: els.sheetWrap.scrollLeft }));
   } else if (mode === 'read') {
     const r = els.reader;
     store(posKey(current.id), JSON.stringify({ ratio: r.scrollTop / Math.max(1, r.scrollHeight - r.clientHeight) }));
@@ -1286,6 +1550,7 @@ let posTimer;
 const savePosSoon = () => { clearTimeout(posTimer); posTimer = setTimeout(savePos, 400); };
 els.reader.addEventListener('scroll', savePosSoon, { passive: true });
 els.pdfWrap.addEventListener('scroll', savePosSoon, { passive: true });
+els.sheetWrap.addEventListener('scroll', savePosSoon, { passive: true });
 // Also save when the app goes to the background (the phone may close it there).
 // A document that was never saved stays unsaved (it needs a name first); only its position is kept.
 document.addEventListener('visibilitychange', () => {
@@ -1336,7 +1601,7 @@ async function syncWake() {
 }
 const activity = () => { lastActive = Date.now(); syncWake(); };
 for (const ev of ['pointerdown', 'keydown']) document.addEventListener(ev, activity, { passive: true });
-for (const el of [els.reader, els.pdfWrap]) el.addEventListener('scroll', activity, { passive: true });
+for (const el of [els.reader, els.pdfWrap, els.sheetWrap]) el.addEventListener('scroll', activity, { passive: true });
 document.addEventListener('visibilitychange', syncWake);
 setInterval(syncWake, 30000);
 
@@ -1377,7 +1642,7 @@ async function receiveShared() {
 }
 
 /* ---------- Start ---------- */
-const APP_VERSION = 11; // keep in step with VERSION in sw.js
+const APP_VERSION = 12; // keep in step with VERSION in sw.js
 $('version').textContent = 'Pocket Docs · version ' + APP_VERSION;
 askPersist();
 const storageFailed = () => { $('emptyMsg').textContent = 'Storage unavailable'; $('emptyMsg').hidden = false; };

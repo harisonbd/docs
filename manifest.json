@@ -46,11 +46,17 @@
             "application/pdf",
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             "application/vnd.oasis.opendocument.text",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.ms-excel",
+            "application/vnd.oasis.opendocument.spreadsheet",
             ".txt",
             ".md",
             ".docx",
             ".odt",
-            ".pdf"
+            ".pdf",
+            ".xlsx",
+            ".xls",
+            ".ods"
           ]
         }
       ]

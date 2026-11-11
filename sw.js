@@ -1,10 +1,10 @@
 // Offline support: stores every app file on the phone the first time the app opens.
 // To publish an update later, change VERSION (e.g. 'pocketdocs-v2') and upload the changed files.
-const VERSION = 'pocketdocs-v11';
+const VERSION = 'pocketdocs-v12';
 const MAX_FILE = 100 * 1024 * 1024; // shared files over 100 MB are skipped
 const FILES = [
   './', 'index.html', 'manifest.json', 'logo-192.png', 'logo-512.png', 'logo-maskable.png',
-  'jszip.min.js', 'pdf.min.js', 'pdf.worker.min.js',
+  'jszip.min.js', 'pdf.min.js', 'pdf.worker.min.js', 'xlsx.full.min.js',
   'openjpeg.wasm', 'jbig2.wasm', 'qcms_bg.wasm',
   'FoxitDingbats.pfb', 'FoxitFixed.pfb', 'FoxitFixedBold.pfb', 'FoxitFixedBoldItalic.pfb', 'FoxitFixedItalic.pfb',
   'FoxitSerif.pfb', 'FoxitSerifBold.pfb', 'FoxitSerifBoldItalic.pfb', 'FoxitSerifItalic.pfb', 'FoxitSymbol.pfb',
