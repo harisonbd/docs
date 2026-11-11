@@ -136,7 +136,9 @@
   #sheetWrap.editing td:active { outline: 2px solid var(--accent); outline-offset: -2px; }
   #sheetTable td.hit { background: #ffe066; color: #1c1c1e; }
   #sheetTable td.hit.cur { background: #ff9f1c; }
-  #sheetNote { color: var(--muted); padding: 12px 16px; margin: 0; font-size: 15px; }
+  /* A formula Pocket Docs can't calculate: small orange corner, its value may be old */
+  #sheetTable td.old { background-image: linear-gradient(225deg, #ff9f1c 8px, transparent 8px); }
+  #sheetNote { color: var(--muted); padding: 12px 16px; margin: 0; font-size: 15px; white-space: pre-line; }
   #sheetNote:empty { display: none; }
 
   .tools {
@@ -328,7 +330,7 @@ function toast(msg) {
   clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 1600);
 }
 const fmtDate = (ms) => new Date(ms).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
-const KIND_LABEL = { txt: 'Text', md: 'Markdown', docx: 'Word', odt: 'ODT', pdf: 'PDF', xlsx: 'Excel', xls: 'Excel', ods: 'ODS' };
+const KIND_LABEL = { txt: 'Text', md: 'Markdown', docx: 'Word', odt: 'ODT', pdf: 'PDF', xlsx: 'Excel', xls: 'Excel', ods: 'ODS', csv: 'CSV' };
 
 /* ---------- Document list ---------- */
 async function renderList() {
@@ -385,12 +387,34 @@ const TYPE_EXT = {
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
   'application/vnd.ms-excel': 'xls',
   'application/vnd.oasis.opendocument.spreadsheet': 'ods',
+  'text/csv': 'csv', 'text/comma-separated-values': 'csv',
 };
 const SHEET_TYPES = {
   xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   xls: 'application/vnd.ms-excel',
   ods: 'application/vnd.oasis.opendocument.spreadsheet',
+  csv: 'text/csv',
 };
+// CSV: the separator (comma, semicolon or tab) is the one used most in the first line, outside quotes.
+function csvInfo(text) {
+  const first = text.split(/\r?\n/, 1)[0].replace(/"[^"]*"/g, '');
+  const count = (ch) => first.split(ch).length - 1;
+  const sep = [',', ';', '\t'].reduce((best, ch) => (count(ch) > count(best) ? ch : best), ',');
+  return { sep, eol: text.includes('\r\n') ? '\r\n' : '\n' };
+}
+async function readCsvText(blob) {
+  const text = new TextDecoder('utf-8', { ignoreBOM: true }).decode(await blob.arrayBuffer()); // keep the BOM to see it
+  return { bom: text.startsWith('﻿'), text: text.replace(/^﻿/, '') };
+}
+// Reads a stored spreadsheet document. CSV cells stay exactly as written (raw), so "007" and dates don't change.
+async function readSheetDoc(doc, opts = {}) {
+  if (doc.format === 'csv') {
+    const X = await loadXlsx();
+    const { text } = await readCsvText(doc.data);
+    return X.read(text, { type: 'string', raw: true, FS: csvInfo(text).sep });
+  }
+  return readWorkbook(await doc.data.arrayBuffer(), opts);
+}
 // The spreadsheet reader (SheetJS, about 1 MB) loads only when a spreadsheet is opened.
 let xlsxPromise = null;
 function loadXlsx() {
@@ -424,7 +448,7 @@ async function importFile(file) {
   const dot = file.name.lastIndexOf('.');
   let ext = dot > 0 ? file.name.slice(dot + 1).toLowerCase() : '';
   const base = dot > 0 ? file.name.slice(0, dot) : file.name;
-  if (!['txt', 'md', 'markdown', 'docx', 'odt', 'pdf', 'xlsx', 'xls', 'ods'].includes(ext) && TYPE_EXT[file.type]) ext = TYPE_EXT[file.type];
+  if (!['txt', 'md', 'markdown', 'docx', 'odt', 'pdf', 'xlsx', 'xls', 'ods', 'csv'].includes(ext) && TYPE_EXT[file.type]) ext = TYPE_EXT[file.type];
   const now = Date.now();
   const doc = { id: newId(), name: base || 'Untitled', format: ext, created: now, updated: now, saved: true };
   try {
@@ -456,13 +480,15 @@ async function importFile(file) {
       const b = new Uint8Array(buf, 0, Math.min(512, buf.byteLength));
       const zip = b[0] === 0x50 && b[1] === 0x4b, cfb = b[0] === 0xd0 && b[1] === 0xcf && b[2] === 0x11 && b[3] === 0xe0;
       const markup = /^(﻿)?\s*</.test(new TextDecoder('utf-8').decode(b));
-      if (ext === 'xls' ? !(cfb || markup || zip) : !zip) throw new Error('This file seems to be damaged, or it is not a spreadsheet.');
-      await readWorkbook(buf, { bookSheets: true }); // quick check that it opens
+      if (ext !== 'csv') {
+        if (ext === 'xls' ? !(cfb || markup || zip) : !zip) throw new Error('This file seems to be damaged, or it is not a spreadsheet.');
+        await readWorkbook(buf, { bookSheets: true }); // quick check that it opens
+      }
       doc.kind = 'sheet';
       doc.data = new Blob([buf], { type: SHEET_TYPES[ext] });
       doc.edits = {};
     } else {
-      await info('Can’t open “' + file.name + '”', 'This app opens .txt, .md, .docx, .odt, .pdf, .xlsx, .xls and .ods files.' + (ext === 'doc' ? '\n\nOld .doc files aren’t supported — save it as .docx first.' : ''));
+      await info('Can’t open “' + file.name + '”', 'This app opens .txt, .md, .docx, .odt, .pdf, .xlsx, .xls, .ods and .csv files.' + (ext === 'doc' ? '\n\nOld .doc files aren’t supported — save it as .docx first.' : ''));
       return null;
     }
     await dbPut(doc);
@@ -830,7 +856,7 @@ window.addEventListener('popstate', async () => {
 
 /* ---------- Export ---------- */
 function safeName(name) {
-  return (name.replace(/\.(txt|md|markdown|docx|odt|pdf|xlsx|xls|ods)$/i, '').replace(/[\\/:*?"<>|]+/g, '_').trim() || 'document');
+  return (name.replace(/\.(txt|md|markdown|docx|odt|pdf|xlsx|xls|ods|csv)$/i, '').replace(/[\\/:*?"<>|]+/g, '_').trim() || 'document');
 }
 function download(blob, filename) {
   const a = document.createElement('a');
@@ -858,7 +884,7 @@ $('exportBtn').onclick = $('exportBtn2').onclick = async () => {
   } catch (err) { info('Export failed', err?.message || String(err)); }
 };
 
-/* ---------- Spreadsheets (.xlsx .xls .ods): view, change values, export ---------- */
+/* ---------- Spreadsheets (.xlsx .xls .ods .csv): view, change values, export ---------- */
 // sheet = { doc, wb (the workbook with your changes put in), idx (the sheet on screen) }
 let sheet = null, sheetToken = 0;
 const MAX_ROWS = 2000, MAX_COLS = 60; // bigger sheets make a phone slow; the rest is cut off with a note
@@ -868,6 +894,165 @@ function cellText(c) {
   if (c.w !== undefined) return String(c.w);
   try { return XLSX.utils.format_cell(c); } catch { return String(c.v); }
 }
+/* Formula calculator: + − × ÷ ^ %, brackets, cells (also on other sheets), ranges, and
+   SUM, AVERAGE, MIN, MAX, COUNT. Any other formula keeps the value saved in the file and is marked "may be old". */
+const CALC_FNS = new Set(['SUM', 'AVERAGE', 'MIN', 'MAX', 'COUNT']);
+function parseFormula(s) {
+  let i = 0;
+  const fail = () => { throw new Error('unsupported'); };
+  const peek = () => { while (s[i] === ' ') i++; return s[i]; };
+  const col = (letters) => XLSX.utils.decode_col(letters.toUpperCase());
+  function expr() { let a = term(); for (;;) { const c = peek(); if (c !== '+' && c !== '-') return a; i++; a = { k: 'bin', op: c, a, b: term() }; } }
+  function term() { let a = power(); for (;;) { const c = peek(); if (c !== '*' && c !== '/') return a; i++; a = { k: 'bin', op: c, a, b: power() }; } }
+  function power() { let a = unary(); while (peek() === '^') { i++; a = { k: 'bin', op: '^', a, b: unary() }; } return a; }
+  function unary() {
+    const c = peek();
+    if (c === '-') { i++; return { k: 'neg', a: unary() }; }
+    if (c === '+') { i++; return unary(); }
+    let a = primary();
+    while (peek() === '%') { i++; a = { k: 'pct', a }; }
+    return a;
+  }
+  function primary() {
+    const c = peek();
+    if (c === undefined) fail();
+    if (c === '(') { i++; const a = expr(); if (peek() !== ')') fail(); i++; return a; }
+    let m = /^(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?/.exec(s.slice(i));
+    if (m) { i += m[0].length; return { k: 'num', v: Number(m[0]) }; }
+    let sheetName = null;
+    if (c === "'") { m = /^'((?:[^']|'')+)'!/.exec(s.slice(i)); if (!m) fail(); sheetName = m[1].replace(/''/g, "'"); i += m[0].length; }
+    m = /^[A-Za-z_$][\w.$]*/.exec(s.slice(i));
+    if (!m) fail();
+    let word = m[0]; i += word.length;
+    if (!sheetName && s[i] === '(') {
+      const name = word.toUpperCase();
+      if (!CALC_FNS.has(name)) fail();
+      i++;
+      const args = [];
+      if (peek() !== ')') for (;;) { args.push(expr()); if (peek() !== ',') break; i++; }
+      if (peek() !== ')') fail();
+      i++;
+      return { k: 'fn', name, args };
+    }
+    if (!sheetName && s[i] === '!') {
+      sheetName = word; i++;
+      m = /^[A-Za-z_$][\w.$]*/.exec(s.slice(i)); if (!m) fail();
+      word = m[0]; i += word.length;
+    }
+    const cell = /^\$?([A-Za-z]{1,3})\$?(\d+)$/.exec(word), whole = /^\$?([A-Za-z]{1,3})$/.exec(word);
+    if (s[i] === ':') {
+      i++;
+      m = /^\$?([A-Za-z]{1,3})\$?(\d*)/.exec(s.slice(i)); if (!m) fail();
+      i += m[0].length;
+      if (cell && m[2]) return { k: 'range', s: sheetName, c1: col(cell[1]), r1: +cell[2] - 1, c2: col(m[1]), r2: +m[2] - 1 };
+      if (whole && !m[2]) return { k: 'range', s: sheetName, c1: col(whole[1]), r1: 0, c2: col(m[1]), r2: Infinity };
+      fail();
+    }
+    if (!cell) fail();
+    return { k: 'ref', s: sheetName, c: col(cell[1]), r: +cell[2] - 1 };
+  }
+  const tree = expr();
+  if (peek() !== undefined) fail();
+  return tree;
+}
+// Recalculates every formula in the workbook. Returns the cells whose value may be old ("Sheet!A1").
+function recalcWorkbook(wb) {
+  const memo = new Map(), busy = new Set(), trees = new Map(), olds = new Set();
+  const enc = XLSX.utils.encode_cell;
+  function cellVal(sn, ws, addr) {
+    const c = ws[addr];
+    if (!c) return { v: undefined, old: false };
+    if (c.f) return formula(sn, ws, addr, c);
+    if (c.t === 'e') throw new Error('error cell');
+    return { v: c.v, old: false };
+  }
+  function formula(sn, ws, addr, c) {
+    const key = sn + '!' + addr;
+    if (memo.has(key)) return memo.get(key);
+    if (busy.has(key)) throw new Error('circular');
+    busy.add(key);
+    let res;
+    try {
+      if (!trees.has(c.f)) { let t = null; try { t = parseFormula(c.f); } catch {} trees.set(c.f, t); }
+      const tree = trees.get(c.f);
+      if (!tree || c.F) throw new Error('unsupported');
+      const ctx = { old: false };
+      const v = evalNode(tree, sn, ctx);
+      if (typeof v !== 'number' || !isFinite(v)) throw new Error('not a number');
+      res = { v, old: ctx.old, calc: true };
+    } catch { res = { v: c.v, old: true, calc: false }; }
+    busy.delete(key);
+    memo.set(key, res);
+    return res;
+  }
+  function num(x) {
+    if (x === undefined || x === null || x === '') return 0;
+    if (typeof x === 'number') return x;
+    if (typeof x === 'boolean') return x ? 1 : 0;
+    const t = String(x).trim(), n = Number(t);
+    if (t !== '' && !isNaN(n)) return n;
+    throw new Error('#VALUE!');
+  }
+  function sheetOf(name, from) {
+    const sn = name ?? from, ws = wb.Sheets[sn];
+    if (!ws) throw new Error('no such sheet');
+    return [sn, ws];
+  }
+  function evalNode(n, sn, ctx) {
+    if (n.k === 'num') return n.v;
+    if (n.k === 'neg') return -num(evalNode(n.a, sn, ctx));
+    if (n.k === 'pct') return num(evalNode(n.a, sn, ctx)) / 100;
+    if (n.k === 'bin') {
+      const a = num(evalNode(n.a, sn, ctx)), b = num(evalNode(n.b, sn, ctx));
+      if (n.op === '+') return a + b;
+      if (n.op === '-') return a - b;
+      if (n.op === '*') return a * b;
+      if (n.op === '/') { if (b === 0) throw new Error('#DIV/0!'); return a / b; }
+      return a ** b;
+    }
+    if (n.k === 'ref') {
+      const [s2, w2] = sheetOf(n.s, sn);
+      const r = cellVal(s2, w2, enc({ c: n.c, r: n.r }));
+      if (r.old) ctx.old = true;
+      return r.v;
+    }
+    if (n.k === 'range') throw new Error('range outside a function');
+    // Functions: numbers in ranges and cells count; text and empty cells are skipped (as in Excel).
+    const nums = [];
+    for (const a of n.args) {
+      if (a.k === 'range' || a.k === 'ref') {
+        const [s2, w2] = sheetOf(a.s, sn);
+        const end = XLSX.utils.decode_range(w2['!ref'] || 'A1').e;
+        const r1 = a.k === 'ref' ? a.r : Math.min(a.r1, a.r2), r2 = a.k === 'ref' ? a.r : Math.min(Math.max(a.r1, a.r2), end.r);
+        const c1 = a.k === 'ref' ? a.c : Math.min(a.c1, a.c2), c2 = a.k === 'ref' ? a.c : Math.min(Math.max(a.c1, a.c2), end.c);
+        for (let r = r1; r <= r2; r++) for (let c = c1; c <= c2; c++) {
+          const v = cellVal(s2, w2, enc({ c, r }));
+          if (v.old) ctx.old = true;
+          if (typeof v.v === 'number') nums.push(v.v);
+        }
+      } else nums.push(num(evalNode(a, sn, ctx)));
+    }
+    const sum = nums.reduce((t, x) => t + x, 0);
+    if (n.name === 'SUM') return sum;
+    if (n.name === 'COUNT') return nums.length;
+    if (n.name === 'AVERAGE') { if (!nums.length) throw new Error('#DIV/0!'); return sum / nums.length; }
+    if (!nums.length) return 0;
+    return n.name === 'MIN' ? nums.reduce((m, x) => Math.min(m, x)) : nums.reduce((m, x) => Math.max(m, x));
+  }
+  for (const sn of wb.SheetNames) {
+    const ws = wb.Sheets[sn];
+    for (const addr of Object.keys(ws)) {
+      const c = ws[addr];
+      if (addr[0] === '!' || !c?.f) continue;
+      const r = formula(sn, ws, addr, c);
+      if (r.calc && (c.v !== r.v || c.t !== 'n')) { c.v = r.v; c.t = 'n'; delete c.w; }
+      if (r.old) olds.add(sn + '!' + addr);
+    }
+  }
+  return olds;
+}
+// Only after you changed a cell: before that, the values saved in the file are shown as they are.
+const hasEdits = (doc) => Object.values(doc.edits || {}).some((cells) => Object.keys(cells).length);
 function putEdits(wb, edits) {
   for (const [name, cells] of Object.entries(edits || {})) {
     const ws = wb.Sheets[name];
@@ -883,11 +1068,11 @@ async function showSheet(doc) {
   els.sheetTable.replaceChildren();
   els.sheetNote.textContent = 'Opening spreadsheet…';
   try {
-    const wb = await readWorkbook(await doc.data.arrayBuffer(), { cellFormula: true, cellNF: true });
+    const wb = await readSheetDoc(doc, { cellFormula: true, cellNF: true });
     if (token !== sheetToken || current !== doc) return;
     putEdits(wb, doc.edits);
     const pos = readPos();
-    sheet = { doc, wb, idx: pos?.sheet >= 0 && pos.sheet < wb.SheetNames.length ? pos.sheet : 0 };
+    sheet = { doc, wb, idx: pos?.sheet >= 0 && pos.sheet < wb.SheetNames.length ? pos.sheet : 0, olds: hasEdits(doc) ? recalcWorkbook(wb) : new Set() };
     renderSheet();
     if (pos?.sheet === sheet.idx) { els.sheetWrap.scrollTop = pos.top || 0; els.sheetWrap.scrollLeft = pos.left || 0; }
   } catch (err) {
@@ -903,29 +1088,36 @@ function closeSheet() {
   els.sheetTable.replaceChildren();
   els.sheetNote.textContent = '';
 }
-function renderSheet() {
-  const ws = sheet.wb.Sheets[sheet.wb.SheetNames[sheet.idx]];
+const looksNumeric = (c) => c?.t === 'n' || (c?.t === 's' && /^[-+]?\d[\d.,]*%?$/.test(c.v)); // CSV cells are text
+function renderSheet(keepScroll = false) {
+  const name = sheet.wb.SheetNames[sheet.idx], ws = sheet.wb.Sheets[name];
   const ref = ws?.['!ref'];
-  els.sheetWrap.scrollTop = els.sheetWrap.scrollLeft = 0;
+  if (!keepScroll) els.sheetWrap.scrollTop = els.sheetWrap.scrollLeft = 0;
   if (!ref) { els.sheetTable.replaceChildren(); els.sheetNote.textContent = 'This sheet is empty.'; return; }
   const r = XLSX.utils.decode_range(ref);
   const rows = Math.min(r.e.r + 1, MAX_ROWS), cols = Math.min(r.e.c + 1, MAX_COLS);
   const letters = [];
   for (let c = 0; c < cols; c++) letters.push(XLSX.utils.encode_col(c));
   let html = '<thead><tr><th></th>' + letters.map((l) => '<th>' + l + '</th>').join('') + '</tr></thead><tbody>';
+  let anyOld = false;
   for (let row = 0; row < rows; row++) {
     html += '<tr><th>' + (row + 1) + '</th>';
     for (let c = 0; c < cols; c++) {
       const addr = letters[c] + (row + 1), cell = ws[addr];
-      html += '<td data-a="' + addr + '"' + (cell?.t === 'n' ? ' class="n"' : '') + '>' + escHtml(cellText(cell)) + '</td>';
+      const old = sheet.olds.has(name + '!' + addr);
+      if (old) anyOld = true;
+      const cls = [looksNumeric(cell) ? 'n' : '', old ? 'old' : ''].filter(Boolean).join(' ');
+      html += '<td data-a="' + addr + '"' + (cls ? ' class="' + cls + '"' : '') + '>' + escHtml(cellText(cell)) + '</td>';
     }
     html += '</tr>';
   }
   els.sheetTable.innerHTML = html + '</tbody>';
-  const cut = [];
+  const cut = [], notes = [];
   if (r.e.r + 1 > MAX_ROWS) cut.push(`the first ${MAX_ROWS.toLocaleString()} of ${(r.e.r + 1).toLocaleString()} rows`);
   if (r.e.c + 1 > MAX_COLS) cut.push(`the first ${MAX_COLS} of ${r.e.c + 1} columns`);
-  els.sheetNote.textContent = cut.length ? 'Showing ' + cut.join(' and ') + '. Export keeps everything.' : '';
+  if (cut.length) notes.push('Showing ' + cut.join(' and ') + '. Export keeps everything.');
+  if (anyOld) notes.push('Cells with an orange corner may show an old value: Pocket Docs can’t calculate their formula.');
+  els.sheetNote.textContent = notes.join('\n');
 }
 function goToSheet(i) {
   if (!sheet || i === sheet.idx) return;
@@ -943,7 +1135,12 @@ els.sheetTable.addEventListener('click', async (e) => {
   const doc = current, s = sheet, name = s.wb.SheetNames[s.idx], ws = s.wb.Sheets[name], addr = td.dataset.a;
   const old = ws[addr];
   if (old?.f) {
-    await info('This cell is a formula', '=' + old.f + '\n\nFormulas can’t be changed here. The value stays as saved in the file.');
+    let can = false;
+    try { parseFormula(old.f); can = !old.F; } catch {}
+    const why = sheet.olds.has(name + '!' + addr) || !can
+      ? 'Pocket Docs can’t calculate this formula (or a cell it uses), so the value may be old.'
+      : 'Pocket Docs updates the value when you change a cell it uses.';
+    await info('This cell is a formula', '=' + old.f + '\n\nFormulas can’t be changed here. ' + why);
     return;
   }
   // Plain numbers start as the bare number (1045.5, not "€1,045.50"); dates and text as shown.
@@ -963,8 +1160,11 @@ els.sheetTable.addEventListener('click', async (e) => {
   doc.updated = Date.now();
   try { await dbPut(doc); }
   catch (err) { await info('Couldn’t save', err?.message || String(err)); return; }
-  td.textContent = cellText(ws[addr]);
-  td.classList.toggle('n', cell?.t === 'n');
+  if (sheet !== s) return;
+  // Totals that use this cell change too, so recalculate and draw the sheet again (same place).
+  s.olds = recalcWorkbook(s.wb);
+  renderSheet(true);
+  if (find.open && els.findInput.value) runFind(false);
   toast('Saved');
 });
 $('sheetDone').onclick = () => setMode('read');
@@ -978,14 +1178,20 @@ async function exportSheet() {
     // SheetJS can't write formulas into old .xls files, so offer .xlsx too, which keeps them.
     fmt = await ask({ title: 'Export as…', message: where + '.xls: formulas become fixed values.\n.xlsx: formulas are kept.' + notKept, buttons: [{ label: '.xls (values only)', value: 'xls' }, { label: '.xlsx (keeps formulas)', value: 'xlsx', primary: true }, { label: 'Cancel', value: null }] });
   } else {
-    const ok = await ask({ title: 'Export ' + safeName(current.name) + '.' + fmt + '?', message: where + 'Values and formulas are kept.' + notKept, buttons: [{ label: 'Cancel', value: false }, { label: 'Export', value: true, primary: true }] });
+    const ok = await ask({ title: 'Export ' + safeName(current.name) + '.' + fmt + '?', message: where + (fmt === 'csv' ? 'Your changes are included.' : 'Values and formulas are kept.' + notKept), buttons: [{ label: 'Cancel', value: false }, { label: 'Export', value: true, primary: true }] });
     if (!ok) fmt = null;
   }
   if (!fmt || !sheet) return;
   const name = safeName(current.name) + '.' + fmt;
   try {
-    const out = XLSX.write(sheet.wb, { bookType: fmt, type: 'array', compression: true });
-    download(new Blob([out], { type: SHEET_TYPES[fmt] }), name);
+    let out;
+    if (fmt === 'csv') {
+      // Same separator, line endings and BOM as the original file.
+      const { bom, text } = await readCsvText(current.data);
+      const { sep, eol } = csvInfo(text);
+      out = (bom ? '﻿' : '') + XLSX.utils.sheet_to_csv(sheet.wb.Sheets[sheet.wb.SheetNames[0]], { FS: sep, RS: eol }) + (/\r?\n$/.test(text) ? eol : '');
+    } else out = XLSX.write(sheet.wb, { bookType: fmt, type: 'array', compression: true });
+    download(new Blob([out], { type: SHEET_TYPES[fmt] + (fmt === 'csv' ? ';charset=utf-8' : '') }), name);
     toast('Exported ' + name);
   } catch (err) { console.error(err); info('Export failed', err?.message || String(err)); }
 }
@@ -1641,7 +1847,7 @@ async function receiveShared() {
 }
 
 /* ---------- Start ---------- */
-const APP_VERSION = 13; // keep in step with VERSION in sw.js
+const APP_VERSION = 14; // keep in step with VERSION in sw.js
 $('version').textContent = 'Pocket Docs · version ' + APP_VERSION;
 askPersist();
 const storageFailed = () => { $('emptyMsg').textContent = 'Storage unavailable'; $('emptyMsg').hidden = false; };

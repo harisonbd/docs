@@ -49,6 +49,8 @@
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             "application/vnd.ms-excel",
             "application/vnd.oasis.opendocument.spreadsheet",
+            "text/csv",
+            "text/comma-separated-values",
             ".txt",
             ".md",
             ".docx",
@@ -56,7 +58,8 @@
             ".pdf",
             ".xlsx",
             ".xls",
-            ".ods"
+            ".ods",
+            ".csv"
           ]
         }
       ]
