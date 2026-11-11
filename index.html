@@ -53,6 +53,8 @@
   }
   .bar h1 { font-size: 26px; margin: 6px 2px; }
   .bar .title { flex: 1; min-width: 0; }
+  /* Back is an arrow only (like Sun Launcher), a square button, so the title gets more room */
+  #backBtn { padding: 0; display: grid; place-items: center; }
   .bar .title b { display: block; font-size: 19px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .bar .title small { display: block; color: var(--muted); font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -129,7 +131,9 @@
   .tools button.icon { flex: 0 0 54px; font-size: 22px; }
   .tools button.size { flex: 0 0 58px; font-size: 18px; font-weight: 600; }
   .tools .label { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 16px; }
-  .tools button.label { background: none; border-color: transparent; }
+  /* Page (PDF) or screen (text) number in the top bar; looks like plain text, tap to go to a page */
+  #pageLabel { background: none; border-color: transparent; color: var(--muted); font-size: 15px; padding: 0 4px; min-width: 0; white-space: nowrap; }
+  #pageLabel:empty { display: none; }
 
   dialog {
     border: 1px solid var(--line); border-radius: 16px; padding: 20px;
@@ -173,8 +177,9 @@
 <!-- Open document -->
 <section id="docView" class="view" hidden>
   <header class="bar">
-    <button id="backBtn" aria-label="Back to list">← Back</button>
+    <button id="backBtn" aria-label="Back to list"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 6l-6 6 6 6"></path></svg></button>
     <div class="title"><b id="docTitle"></b><small id="docState"></small></div>
+    <button id="pageLabel" aria-label="Go to page"></button>
     <button id="findBtn" aria-label="Find in document">Find</button>
   </header>
   <div id="findBar" hidden>
@@ -205,7 +210,6 @@
     <button id="zoomOut" aria-label="Zoom out">−</button>
     <button id="zoomLabel" aria-label="Reset zoom">100%</button>
     <button id="zoomIn" aria-label="Zoom in">+</button>
-    <button id="pageLabel" class="label" aria-label="Go to page"></button>
   </footer>
 </section>
 
@@ -622,6 +626,7 @@ function openDoc(doc) {
   find.pdfText = null;
   closeFind();
   els.docTitle.textContent = doc.name;
+  els.pageLabel.textContent = '';
   const isPdf = doc.kind === 'pdf';
   els.editor.hidden = els.reader.hidden = els.textTools.hidden = els.readTools.hidden = true;
   els.pdfWrap.hidden = !isPdf; els.pdfTools.hidden = !isPdf;
@@ -639,6 +644,7 @@ function openDoc(doc) {
     setMode(doc.saved ? 'read' : 'edit');
     els.editor.scrollTop = els.reader.scrollTop = 0;
     if (mode === 'read') restoreTextPos();
+    updatePageLabel();
     if (!doc.saved) els.editor.focus();
   }
   activity();
@@ -666,6 +672,7 @@ function setMode(m) {
   to.scrollTop = ratio * (to.scrollHeight - to.clientHeight);
   if (find.open && els.findInput.value) runFind(false);
   updateState();
+  updatePageLabel();
   syncWake();
 }
 // A new, never-saved document only counts as changed once something is typed.
@@ -926,21 +933,45 @@ function currentPage() {
   for (const p of pdfPages) { if (p.div.getBoundingClientRect().top <= mid) n = p.num; else break; }
   return n;
 }
+// Text documents have no pages on a phone: count screenfuls of the reader instead.
+function textScreens() {
+  const r = els.reader, h = Math.max(1, r.clientHeight);
+  const total = Math.max(1, Math.ceil(r.scrollHeight / h));
+  const n = r.scrollTop + h >= r.scrollHeight - 8 ? total : Math.min(total, Math.floor(r.scrollTop / h) + 1);
+  return { n, total };
+}
 function updatePageLabel() {
-  if (!pdfPages.length) return;
-  els.pageLabel.textContent = `${currentPage()} / ${pdfPages.length}`;
+  let text = '';
+  if (current?.kind === 'pdf') {
+    if (pdfPages.length) text = `${currentPage()} / ${pdfPages.length}`;
+  } else if (current && mode === 'read') { // hidden while editing
+    const s = textScreens();
+    text = `${s.n} / ${s.total}`;
+  }
+  els.pageLabel.textContent = text;
 }
 els.pdfWrap.addEventListener('scroll', updatePageLabel, { passive: true });
-// Tap the page label to jump to a page; numbers out of range go to the first or last page.
+els.reader.addEventListener('scroll', updatePageLabel, { passive: true });
+// The reader's height changes with the Find bar, the keyboard and rotation; the screen count follows it.
+new ResizeObserver(() => updatePageLabel()).observe(els.reader);
+// Tap the number to jump to a page (PDF) or screen (text); numbers out of range go to the first or last one.
 els.pageLabel.onclick = async () => {
-  if (!pdfPages.length) return;
+  const doc = current, isPdf = doc?.kind === 'pdf';
+  if (!doc || (isPdf && !pdfPages.length)) return;
   const token = pdfToken;
-  const v = await ask({ title: 'Go to page', input: String(currentPage()), inputMode: 'numeric', buttons: [{ label: 'Cancel', value: null }, { label: 'Go', value: '__input__', primary: true }] });
+  const v = await ask({ title: isPdf ? 'Go to page' : 'Go to screen', input: String(isPdf ? currentPage() : textScreens().n), inputMode: 'numeric', buttons: [{ label: 'Cancel', value: null }, { label: 'Go', value: '__input__', primary: true }] });
   const n = parseInt(v, 10);
-  if (token !== pdfToken || !pdfPages.length || isNaN(n)) return;
-  const p = pdfPages[Math.min(pdfPages.length, Math.max(1, n)) - 1];
-  const wr = els.pdfWrap.getBoundingClientRect(), pr = p.div.getBoundingClientRect();
-  els.pdfWrap.scrollTop += pr.top - wr.top;
+  if (current !== doc || isNaN(n)) return;
+  if (isPdf) {
+    if (token !== pdfToken || !pdfPages.length) return;
+    const p = pdfPages[Math.min(pdfPages.length, Math.max(1, n)) - 1];
+    const wr = els.pdfWrap.getBoundingClientRect(), pr = p.div.getBoundingClientRect();
+    els.pdfWrap.scrollTop += pr.top - wr.top;
+  } else {
+    if (mode !== 'read') return;
+    const total = textScreens().total;
+    els.reader.scrollTop = (Math.min(total, Math.max(1, n)) - 1) * els.reader.clientHeight;
+  }
   updatePageLabel();
 };
 
@@ -1274,6 +1305,7 @@ function changeFont(dir) {
   store('fontSize', String(fontSize));
   applyFontSize();
   r.scrollTop = ratio * (r.scrollHeight - r.clientHeight);
+  updatePageLabel();
   toast('Text size ' + Math.round((fontSize / 18) * 100) + '%');
 }
 applyFontSize();
@@ -1345,7 +1377,7 @@ async function receiveShared() {
 }
 
 /* ---------- Start ---------- */
-const APP_VERSION = 10; // keep in step with VERSION in sw.js
+const APP_VERSION = 11; // keep in step with VERSION in sw.js
 $('version').textContent = 'Pocket Docs · version ' + APP_VERSION;
 askPersist();
 const storageFailed = () => { $('emptyMsg').textContent = 'Storage unavailable'; $('emptyMsg').hidden = false; };
