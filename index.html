@@ -71,6 +71,21 @@
   #docList .open small { color: var(--muted); font-size: 15px; }
   #docList .more { font-size: 24px; line-height: 1; padding: 0; width: 56px; }
   #emptyMsg { color: var(--muted); text-align: center; padding: 30px 20px; }
+  /* Search all documents (on the list screen) */
+  #searchBox { padding: 0 14px 10px; }
+  #searchAll {
+    width: 100%; box-sizing: border-box; font: inherit; font-size: 17px; height: 48px; padding: 0 12px;
+    border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--text);
+  }
+  #searchStatus { color: var(--muted); font-size: 15px; margin: 0; padding: 0 16px 8px; }
+  #searchStatus[hidden], #searchResults[hidden] { display: none; }
+  #searchResults { list-style: none; margin: 0; padding: 0 14px 24px; overflow-y: auto; flex: 1; }
+  #searchResults li { margin-bottom: 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); overflow: hidden; }
+  #searchResults button { display: block; width: 100%; text-align: left; border: 0; border-radius: 0; background: none; }
+  #searchResults .open { padding: 10px 16px; min-height: 56px; }
+  #searchResults .open b { display: block; font-weight: 600; overflow-wrap: anywhere; }
+  #searchResults .open small { color: var(--muted); font-size: 15px; }
+  #searchResults .snip { min-height: 44px; padding: 6px 16px 8px; color: var(--muted); font-size: 15px; overflow-wrap: anywhere; border-top: 1px solid var(--line); }
   #version { color: var(--muted); font-size: 13px; text-align: center; margin: 0; padding: 6px 0 max(10px, env(safe-area-inset-bottom)); }
 
   #notice {
@@ -188,6 +203,9 @@
     <button id="openBtn">Open file</button>
   </div>
   <input type="file" id="fileInput" hidden>
+  <div id="searchBox"><input id="searchAll" type="search" placeholder="Search all documents…" enterkeyhint="search" autocomplete="off" aria-label="Search all documents"></div>
+  <p id="searchStatus" role="status" hidden></p>
+  <ul id="searchResults" hidden></ul>
   <ul id="docList"></ul>
   <p id="emptyMsg" hidden>No documents yet.<br>Tap “New” or “Open file”.<br>Documents are saved only in this browser. Clearing site data deletes them.</p>
   <p id="version"></p>
@@ -256,6 +274,7 @@ const els = {
   reader: $('reader'), readTools: $('readTools'),
   findBar: $('findBar'), findInput: $('findInput'), findCount: $('findCount'),
   sheetWrap: $('sheetWrap'), sheetTable: $('sheetTable'), sheetNote: $('sheetNote'), sheetTools: $('sheetTools'),
+  searchAll: $('searchAll'), searchStatus: $('searchStatus'), searchResults: $('searchResults'),
 };
 
 /* ---------- Storage (IndexedDB: stays on this phone only) ---------- */
@@ -351,6 +370,7 @@ async function renderList() {
     li.append(open, more);
     els.docList.append(li);
   }
+  if (searchActive()) runSearchAll(); // back from a document: show fresh results
 }
 async function docOptions(doc) {
   const choice = await ask({
@@ -366,7 +386,7 @@ async function docOptions(doc) {
     if (name !== null && name.trim()) { doc.name = name.trim(); doc.updated = Date.now(); await dbPut(doc); renderList(); }
   } else if (choice === 'delete') {
     const ok = await ask({ title: 'Delete document?', message: `“${doc.name}” will be removed from this app. This can't be undone.`, buttons: [{ label: 'Cancel', value: false }, { label: 'Delete', value: true, danger: true }] });
-    if (ok) { await dbDel(doc.id); forgetPos(doc.id); renderList(); toast('Deleted'); }
+    if (ok) { await dbDel(doc.id); forgetPos(doc.id); searchCache.delete(doc.id); renderList(); toast('Deleted'); }
   }
 }
 
@@ -1240,22 +1260,37 @@ let pdfjs = null, pdfDoc = null, pdfTask = null, pdfPages = [], zoom = 1, baseSc
 const ZOOM_MIN = 0.5, ZOOM_MAX = 5;
 const MAX_CANVAS_PIXELS = 8_000_000;
 
+// Loads pdf.js the first time, then starts reading a PDF (used by the viewer and by "Search all").
+async function openPdfTask(blob) {
+  if (!pdfjs) {
+    pdfjs = await import('./pdf.min.js');
+    pdfjs.GlobalWorkerOptions.workerSrc = new URL('pdf.worker.min.js', location.href).href;
+  }
+  return pdfjs.getDocument({
+    data: new Uint8Array(await blob.arrayBuffer()), isEvalSupported: false, enableXfa: false,
+    standardFontDataUrl: new URL('./', location.href).href,
+    wasmUrl: new URL('./', location.href).href,
+  });
+}
+// The text of one PDF page, built the same way as Find builds it (so match numbers agree).
+function pdfPageString(tc) {
+  let s = '';
+  const map = [];
+  for (const it of tc.items) {
+    if (typeof it.str !== 'string') continue;
+    map.push({ start: s.length, it });
+    s += it.str;
+    if (it.hasEOL) s += ' ';
+  }
+  return { s, map };
+}
 async function showPdf(blob) {
   const token = ++pdfToken;
   els.pdfPages.replaceChildren(statusEl('Opening PDF…'));
   els.pageLabel.textContent = '';
   zoom = 1;
   try {
-    if (!pdfjs) {
-      pdfjs = await import('./pdf.min.js');
-      pdfjs.GlobalWorkerOptions.workerSrc = new URL('pdf.worker.min.js', location.href).href;
-    }
-    const data = new Uint8Array(await blob.arrayBuffer());
-    const task = pdfjs.getDocument({
-      data, isEvalSupported: false, enableXfa: false,
-      standardFontDataUrl: new URL('./', location.href).href,
-      wasmUrl: new URL('./', location.href).href,
-    });
+    const task = await openPdfTask(blob);
     const doc = await task.promise;
     if (token !== pdfToken) { task.destroy(); return; }
     pdfTask = task; pdfDoc = doc;
@@ -1659,14 +1694,7 @@ async function loadPdfText() {
     p.page ??= await pdfDoc.getPage(p.num);
     const tc = await p.page.getTextContent();
     if (token !== pdfToken) throw new Error('closed');
-    let s = '';
-    const map = [];
-    for (const it of tc.items) {
-      if (typeof it.str !== 'string') continue;
-      map.push({ start: s.length, it });
-      s += it.str;
-      if (it.hasEOL) s += ' ';
-    }
+    const { s, map } = pdfPageString(tc);
     pages.push({ s, map, vp: p.page.getViewport({ scale: 1 }) });
     els.findCount.textContent = Math.round((100 * p.num) / pdfPages.length) + '%';
   }
@@ -1713,6 +1741,146 @@ function addHl(p) {
 function clearPdfHl() {
   find.pdfHl = null;
   for (const d of els.pdfPages.querySelectorAll('.hl')) d.remove();
+}
+
+/* ---------- Search all documents ---------- */
+// Text documents are searched straight away. Spreadsheets and PDFs are read once and their text is kept
+// in memory (until the app closes), so the next search is quick. Nothing leaves the phone.
+const searchCache = new Map(); // doc id -> { updated, chunks: [{ text, label, sheet?, addr? }] }
+let searchToken = 0, searchTimer;
+const searchActive = () => els.searchAll.value.trim().length >= 2;
+async function searchChunks(doc) {
+  if (doc.kind === 'text') return [{ text: doc.text || '', label: '' }];
+  const c = searchCache.get(doc.id);
+  if (c && c.updated === doc.updated) return c.chunks;
+  const chunks = [];
+  try {
+    if (doc.kind === 'pdf') {
+      const task = await openPdfTask(doc.data);
+      try {
+        const pd = await task.promise;
+        for (let i = 1; i <= pd.numPages; i++) chunks.push({ text: pdfPageString(await (await pd.getPage(i)).getTextContent()).s, label: 'Page ' + i });
+      } finally { task.destroy(); }
+    } else if (doc.kind === 'sheet') {
+      const wb = await readSheetDoc(doc, { cellFormula: true, cellNF: true });
+      putEdits(wb, doc.edits);
+      if (hasEdits(doc)) recalcWorkbook(wb);
+      wb.SheetNames.forEach((name, idx) => {
+        const ws = wb.Sheets[name], cells = [];
+        for (const addr of Object.keys(ws)) {
+          if (addr[0] === '!') continue;
+          const p = XLSX.utils.decode_cell(addr);
+          if (p.r < MAX_ROWS && p.c < MAX_COLS) cells.push([p.r, p.c, addr]); // only cells shown on screen
+        }
+        cells.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+        for (const [, , addr] of cells) chunks.push({ text: cellText(ws[addr]), label: name + ' ' + addr, sheet: idx, addr });
+      });
+    }
+  } catch (err) { console.warn('Search: could not read', doc.name, err); }
+  searchCache.set(doc.id, { updated: doc.updated, chunks });
+  return chunks;
+}
+function makeSnippet(text, s, e) {
+  const a = Math.max(0, s - 40), b = Math.min(text.length, e + 60);
+  return {
+    pre: (a > 0 ? '…' : '') + text.slice(a, s).replace(/\s+/g, ' ').trimStart(),
+    hit: text.slice(s, e),
+    post: text.slice(e, b).replace(/\s+/g, ' ') + (b < text.length ? '…' : ''),
+  };
+}
+async function runSearchAll() {
+  clearTimeout(searchTimer);
+  const token = ++searchToken, q = els.searchAll.value;
+  if (!searchActive()) {
+    els.searchResults.hidden = els.searchStatus.hidden = true;
+    els.searchResults.replaceChildren();
+    els.docList.hidden = false;
+    els.emptyMsg.hidden = els.docList.children.length > 0;
+    return;
+  }
+  els.docList.hidden = els.emptyMsg.hidden = true;
+  els.searchResults.hidden = els.searchStatus.hidden = false;
+  els.searchResults.replaceChildren();
+  const re = makeRe(q);
+  const all = (await dbAll()).sort((a, b) => b.updated - a.updated);
+  // Quick ones first (text), then spreadsheets, then PDFs (slowest the first time).
+  const order = { text: 0, sheet: 1, pdf: 2 };
+  const docs = all.sort((a, b) => (order[a.kind] ?? 0) - (order[b.kind] ?? 0));
+  const pdfs = docs.filter((d) => d.kind === 'pdf' && searchCache.get(d.id)?.updated !== d.updated).length;
+  let nDocs = 0, nHits = 0, pdfDone = 0;
+  const status = (busy) => {
+    const found = nDocs ? `${nDocs} document${nDocs > 1 ? 's' : ''} · ${nHits} match${nHits === 1 ? '' : 'es'}` : busy ? 'Searching…' : 'No matches';
+    els.searchStatus.textContent = found + (busy && pdfs ? ` · reading PDFs ${pdfDone}/${pdfs}` : '');
+  };
+  status(true);
+  for (const doc of docs) {
+    const fresh = doc.kind === 'pdf' && searchCache.get(doc.id)?.updated !== doc.updated;
+    const chunks = await searchChunks(doc);
+    if (token !== searchToken) return; // the search text changed meanwhile
+    if (fresh) pdfDone++;
+    let total = 0, k = 0;
+    const snips = [];
+    for (const ch of chunks) {
+      for (const [s, e] of allHits(ch.text, re)) {
+        if (snips.length < 3) snips.push({ label: ch.label, ...makeSnippet(ch.text, s, e), target: ch.addr ? { sheet: ch.sheet, addr: ch.addr } : { k } });
+        k++; total++;
+      }
+    }
+    re.lastIndex = 0;
+    const nameHit = re.test(doc.name);
+    if (total || nameHit) {
+      nDocs++; nHits += total;
+      els.searchResults.append(resultItem(doc, q, total, snips));
+    }
+    status(true);
+  }
+  status(false);
+}
+function resultItem(doc, q, total, snips) {
+  const li = document.createElement('li');
+  const head = document.createElement('button');
+  head.className = 'open';
+  const b = document.createElement('b'); b.textContent = doc.name;
+  const s = document.createElement('small');
+  s.textContent = `${KIND_LABEL[doc.format] || 'Text'} · ` + (total ? `${total} match${total === 1 ? '' : 'es'}` : 'name matches');
+  head.append(b, s);
+  head.onclick = () => openAt(doc, q, snips[0]?.target);
+  li.append(head);
+  for (const sn of snips) {
+    const btn = document.createElement('button');
+    btn.className = 'snip';
+    const mk = document.createElement('mark'); mk.textContent = sn.hit;
+    btn.append((sn.label ? sn.label + ': ' : '') + sn.pre, mk, sn.post);
+    btn.onclick = () => openAt(doc, q, sn.target);
+    li.append(btn);
+  }
+  return li;
+}
+els.searchAll.addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(runSearchAll, 300); });
+els.searchAll.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); els.searchAll.blur(); runSearchAll(); } });
+// Opens a document from a search result at that match, with Find on (no keyboard).
+const waitFor = async (ok, ms = 20000) => { const t0 = Date.now(); while (!ok()) { if (Date.now() - t0 > ms) return false; await new Promise((r) => setTimeout(r, 100)); } return true; };
+async function openAt(doc, q, target) {
+  els.searchAll.blur();
+  openDoc(doc);
+  if (!target) return;
+  const here = () => current === doc;
+  els.findInput.value = q;
+  find.open = true; els.findBar.hidden = false;
+  if (doc.kind === 'text') {
+    await runFind(false);
+    if (here() && target.k < find.hits.length) { find.idx = target.k; showTextHit(); }
+  } else if (doc.kind === 'pdf') {
+    if (!(await waitFor(() => !here() || (pdfDoc && pdfPages.length))) || !here()) return;
+    await runFind(false);
+    if (here() && target.k < find.hits.length) { find.idx = target.k; showPdfHit(); }
+  } else if (doc.kind === 'sheet') {
+    if (!(await waitFor(() => !here() || sheet?.doc === doc)) || !here()) return;
+    goToSheet(target.sheet);
+    await runFind(false);
+    const i = find.hits.findIndex((td) => td.dataset.a === target.addr);
+    if (here() && i >= 0) { find.idx = i; showSheetHit(); }
+  }
 }
 
 /* ---------- Remember my place ---------- */
@@ -1847,7 +2015,7 @@ async function receiveShared() {
 }
 
 /* ---------- Start ---------- */
-const APP_VERSION = 14; // keep in step with VERSION in sw.js
+const APP_VERSION = 15; // keep in step with VERSION in sw.js
 $('version').textContent = 'Pocket Docs · version ' + APP_VERSION;
 askPersist();
 const storageFailed = () => { $('emptyMsg').textContent = 'Storage unavailable'; $('emptyMsg').hidden = false; };
