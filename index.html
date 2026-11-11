@@ -184,6 +184,15 @@
   }
   dialog .btns { display: flex; flex-wrap: wrap; gap: 10px; justify-content: flex-end; }
   dialog .btns button { flex: 1 1 auto; }
+  /* Bookmarks, under the Go to buttons */
+  .bmPanel { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 10px; max-height: 45vh; overflow-y: auto; }
+  .bmHead { color: var(--muted); font-size: 15px; margin-bottom: 8px; }
+  .bmRow { display: flex; gap: 8px; margin-bottom: 8px; }
+  .bmGo { flex: 1; min-width: 0; text-align: left; padding: 6px 12px; }
+  .bmGo b { display: block; font-weight: 600; overflow-wrap: anywhere; }
+  .bmGo small { color: var(--muted); font-size: 14px; }
+  .bmDel { flex: 0 0 52px; padding: 0; color: var(--muted); }
+  .bmAdd { width: 100%; }
 
   #toast {
     position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%);
@@ -259,6 +268,7 @@
   <p id="dlgMsg"></p>
   <input id="dlgInput" type="text" autocomplete="off" aria-label="Name">
   <div class="btns" id="dlgBtns"></div>
+  <div id="dlgExtra"></div>
 </dialog>
 <div id="toast" role="status"></div>
 
@@ -313,7 +323,7 @@ const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2
 /* ---------- Small UI helpers ---------- */
 const dlg = $('dlg');
 let dlgResolve = null;
-function ask({ title, message = '', input = null, inputMode = 'text', buttons }) {
+function ask({ title, message = '', input = null, inputMode = 'text', buttons, extra = null }) {
   if (dlgResolve) { dlgResolve(null); dlgResolve = null; if (dlg.open) dlg.close(); }
   $('dlgTitle').textContent = title;
   $('dlgMsg').textContent = message;
@@ -335,6 +345,8 @@ function ask({ title, message = '', input = null, inputMode = 'text', buttons })
       el.onclick = () => finish(b.value === '__input__' ? inp.value : b.value);
       box.append(el);
     }
+    // extra: more controls under the buttons (the bookmark list); they can close the dialog with a value.
+    $('dlgExtra').replaceChildren(...(extra ? [extra(finish)] : []));
     inp.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); finish(inp.value); } };
     dlg.oncancel = (e) => { e.preventDefault(); finish(null); };
     dlg.showModal();
@@ -361,7 +373,8 @@ async function renderList() {
     const open = document.createElement('button');
     open.className = 'open';
     const b = document.createElement('b'); b.textContent = doc.name;
-    const s = document.createElement('small'); s.textContent = `${KIND_LABEL[doc.format] || 'Text'} · ${fmtDate(doc.updated)}`;
+    const nb = loadBookmarks(doc.id).length;
+    const s = document.createElement('small'); s.textContent = `${KIND_LABEL[doc.format] || 'Text'} · ${fmtDate(doc.updated)}` + (nb ? ` · ${nb} bookmark${nb > 1 ? 's' : ''}` : '');
     open.append(b, s);
     open.onclick = () => openDoc(doc);
     const more = document.createElement('button');
@@ -386,7 +399,7 @@ async function docOptions(doc) {
     if (name !== null && name.trim()) { doc.name = name.trim(); doc.updated = Date.now(); await dbPut(doc); renderList(); }
   } else if (choice === 'delete') {
     const ok = await ask({ title: 'Delete document?', message: `“${doc.name}” will be removed from this app. This can't be undone.`, buttons: [{ label: 'Cancel', value: false }, { label: 'Delete', value: true, danger: true }] });
-    if (ok) { await dbDel(doc.id); forgetPos(doc.id); searchCache.delete(doc.id); renderList(); toast('Deleted'); }
+    if (ok) { await dbDel(doc.id); forgetPos(doc.id); saveBookmarks(doc.id, []); searchCache.delete(doc.id); renderList(); toast('Deleted'); }
   }
 }
 
@@ -1423,13 +1436,15 @@ els.pageLabel.onclick = async () => {
     // Spreadsheets: pick a sheet by its name.
     if (!sheet) return;
     const s = sheet;
-    const i = await ask({ title: 'Go to sheet', buttons: [...s.wb.SheetNames.map((n, k) => ({ label: `${k + 1}. ${n}`, value: k, primary: k === s.idx })), { label: 'Cancel', value: null }] });
-    if (i !== null && sheet === s) goToSheet(i);
+    const i = await ask({ title: 'Go to sheet', buttons: [...s.wb.SheetNames.map((n, k) => ({ label: `${k + 1}. ${n}`, value: k, primary: k === s.idx })), { label: 'Cancel', value: null }], extra: (fin) => bookmarkPanel(doc, fin) });
+    if (sheet !== s || await handleBookmarkChoice(doc, i)) return;
+    if (i !== null) goToSheet(i);
     return;
   }
   if (!doc || (isPdf && !pdfPages.length)) return;
   const token = pdfToken;
-  const v = await ask({ title: isPdf ? 'Go to page' : 'Go to screen', input: String(isPdf ? currentPage() : textScreens().n), inputMode: 'numeric', buttons: [{ label: 'Cancel', value: null }, { label: 'Go', value: '__input__', primary: true }] });
+  const v = await ask({ title: isPdf ? 'Go to page' : 'Go to screen', input: String(isPdf ? currentPage() : textScreens().n), inputMode: 'numeric', buttons: [{ label: 'Cancel', value: null }, { label: 'Go', value: '__input__', primary: true }], extra: (fin) => bookmarkPanel(doc, fin) });
+  if (await handleBookmarkChoice(doc, v)) return;
   const n = parseInt(v, 10);
   if (current !== doc || isNaN(n)) return;
   if (isPdf) {
@@ -1889,35 +1904,131 @@ const posKey = (id) => 'pos:' + id;
 function store(key, val) { try { val === null ? localStorage.removeItem(key) : localStorage.setItem(key, val); } catch {} }
 function load(key) { try { return localStorage.getItem(key); } catch { return null; } }
 function forgetPos(id) { store(posKey(id), null); }
-function savePos() {
-  if (!current?.saved) return;
+// Where you are in the open document now (also used for bookmarks). null if not known yet.
+function posNow() {
+  if (!current) return null;
   if (current.kind === 'pdf') {
-    if (!pdfPages.length) return;
+    if (!pdfPages.length) return null;
     const n = currentPage(), p = pdfPages[n - 1];
     const wr = els.pdfWrap.getBoundingClientRect(), pr = p.div.getBoundingClientRect();
-    store(posKey(current.id), JSON.stringify({ page: n, frac: Math.max(0, (wr.top - pr.top) / pr.height) }));
-  } else if (current.kind === 'sheet') {
-    if (!sheet) return;
-    store(posKey(current.id), JSON.stringify({ sheet: sheet.idx, top: els.sheetWrap.scrollTop, left: els.sheetWrap.scrollLeft }));
-  } else if (mode === 'read') {
-    const r = els.reader;
-    store(posKey(current.id), JSON.stringify({ ratio: r.scrollTop / Math.max(1, r.scrollHeight - r.clientHeight) }));
+    return { page: n, frac: Math.max(0, (wr.top - pr.top) / pr.height) };
   }
+  if (current.kind === 'sheet') return sheet ? { sheet: sheet.idx, top: els.sheetWrap.scrollTop, left: els.sheetWrap.scrollLeft } : null;
+  if (mode !== 'read') return null;
+  const r = els.reader;
+  return { ratio: r.scrollTop / Math.max(1, r.scrollHeight - r.clientHeight) };
+}
+function savePos() {
+  if (!current?.saved) return;
+  const pos = posNow();
+  if (pos) store(posKey(current.id), JSON.stringify(pos));
 }
 function readPos() { try { return JSON.parse(load(posKey(current.id))) || null; } catch { return null; } }
 function restoreTextPos() {
   const pos = readPos();
-  if (!pos?.ratio) return;
+  if (pos?.ratio) applyTextPos(pos);
+}
+function applyTextPos(pos) {
   const r = els.reader;
-  r.scrollTop = pos.ratio * (r.scrollHeight - r.clientHeight);
+  r.scrollTop = (pos.ratio || 0) * (r.scrollHeight - r.clientHeight);
 }
 function restorePdfPos() {
   const pos = readPos();
-  const p = pos?.page && pdfPages[pos.page - 1];
+  if (pos?.page) applyPdfPos(pos);
+}
+function applyPdfPos(pos) {
+  const p = pdfPages[Math.min(pdfPages.length, Math.max(1, pos.page)) - 1];
   if (!p) return;
   const wr = els.pdfWrap.getBoundingClientRect(), pr = p.div.getBoundingClientRect();
   els.pdfWrap.scrollTop += pr.top - wr.top + (pos.frac || 0) * pr.height;
   updatePageLabel();
+}
+// Goes to a saved place (a bookmark) in the open document.
+function applyPos(pos) {
+  if (!current || !pos) return;
+  if (current.kind === 'pdf') applyPdfPos(pos);
+  else if (current.kind === 'sheet') {
+    if (!sheet || !(pos.sheet < sheet.wb.SheetNames.length)) return;
+    goToSheet(pos.sheet);
+    els.sheetWrap.scrollTop = pos.top || 0; els.sheetWrap.scrollLeft = pos.left || 0;
+  } else if (mode === 'read') applyTextPos(pos);
+  updatePageLabel();
+  savePosSoon();
+}
+
+/* ---------- Bookmarks ---------- */
+// Your own named places in a document, kept on this phone (localStorage), one list per document.
+const bmKey = (id) => 'bm:' + id;
+function loadBookmarks(id) { try { const a = JSON.parse(load(bmKey(id))); return Array.isArray(a) ? a : []; } catch { return []; } }
+function saveBookmarks(id, list) { store(bmKey(id), list.length ? JSON.stringify(list) : null); }
+// A short name to start with: the first words on screen (text), the page (PDF) or sheet and row (spreadsheet).
+function bookmarkDefaults() {
+  if (current.kind === 'pdf') { const n = currentPage(); return { name: 'Page ' + n, where: 'page ' + n }; }
+  if (current.kind === 'sheet') {
+    const top = els.sheetWrap.scrollTop;
+    const tr = [...els.sheetTable.tBodies[0]?.rows || []].find((r) => r.offsetTop + r.offsetHeight > top + 40);
+    const name = sheet.wb.SheetNames[sheet.idx] + (tr ? ' · row ' + tr.cells[0].textContent : '');
+    return { name, where: name };
+  }
+  const r = els.reader, text = els.editor.value;
+  // The text at the top-left of the screen, then back to the start of that line.
+  let at = Math.round((r.scrollTop / Math.max(1, r.scrollHeight)) * text.length);
+  const rr = r.getBoundingClientRect(), range = document.caretRangeFromPoint?.(rr.left + 20, rr.top + 24);
+  if (range && r.contains(range.startContainer)) {
+    const walk = document.createTreeWalker(r, NodeFilter.SHOW_TEXT);
+    for (let n, off = 0; (n = walk.nextNode()); off += n.length) if (n === range.startContainer) { at = off + range.startOffset; break; }
+  }
+  const lineStart = text.lastIndexOf('\n', at - 1) + 1;
+  if (at - lineStart < 120) at = lineStart;
+  const words = text.slice(at, at + 200).replace(/\s+/g, ' ').trim().split(' ').slice(0, 6).join(' ');
+  return { name: words || 'Bookmark', where: 'screen ' + textScreens().n };
+}
+async function addBookmark() {
+  const doc = current, pos = posNow();
+  if (!doc?.saved || !pos) return;
+  const d = bookmarkDefaults();
+  const name = await ask({ title: 'Name this bookmark', input: d.name, buttons: [{ label: 'Cancel', value: null }, { label: 'Save', value: '__input__', primary: true }] });
+  if (name === null || current !== doc) return;
+  const list = loadBookmarks(doc.id);
+  list.push({ name: (name.trim() || d.name).slice(0, 80), where: d.where, pos });
+  saveBookmarks(doc.id, list);
+  toast('Bookmark saved');
+}
+// The bookmark part of the Go to dialog: tap one to go there, × to remove it, or add this place.
+function bookmarkPanel(doc, finish) {
+  const box = document.createElement('div');
+  box.className = 'bmPanel';
+  const draw = () => {
+    box.replaceChildren();
+    const list = loadBookmarks(doc.id);
+    const h = document.createElement('div'); h.className = 'bmHead'; h.textContent = list.length ? 'Bookmarks' : 'No bookmarks yet';
+    box.append(h);
+    list.forEach((bm, i) => {
+      const row = document.createElement('div'); row.className = 'bmRow';
+      const go = document.createElement('button'); go.className = 'bmGo';
+      const b = document.createElement('b'); b.textContent = bm.name;
+      const s = document.createElement('small'); s.textContent = bm.where || '';
+      go.append(b, s);
+      go.onclick = () => finish({ bookmark: i });
+      const del = document.createElement('button'); del.className = 'bmDel'; del.textContent = '✕';
+      del.setAttribute('aria-label', 'Remove bookmark ' + bm.name);
+      del.onclick = () => { const l = loadBookmarks(doc.id); l.splice(i, 1); saveBookmarks(doc.id, l); toast('Bookmark removed'); draw(); };
+      row.append(go, del);
+      box.append(row);
+    });
+    const add = document.createElement('button'); add.className = 'bmAdd'; add.textContent = '+ Bookmark this place';
+    add.onclick = () => finish({ addBookmark: true });
+    box.append(add);
+  };
+  draw();
+  return box;
+}
+// What the Go to dialog returned: a bookmark to go to or "add one". Returns true if it was one of those.
+async function handleBookmarkChoice(doc, v) {
+  if (!v || typeof v !== 'object' || current !== doc) return false;
+  if (v.addBookmark) await addBookmark();
+  else if (v.bookmark !== undefined) applyPos(loadBookmarks(doc.id)[v.bookmark]?.pos);
+  return true;
 }
 let posTimer;
 const savePosSoon = () => { clearTimeout(posTimer); posTimer = setTimeout(savePos, 400); };
@@ -2015,7 +2126,7 @@ async function receiveShared() {
 }
 
 /* ---------- Start ---------- */
-const APP_VERSION = 15; // keep in step with VERSION in sw.js
+const APP_VERSION = 16; // keep in step with VERSION in sw.js
 $('version').textContent = 'Pocket Docs · version ' + APP_VERSION;
 askPersist();
 const storageFailed = () => { $('emptyMsg').textContent = 'Storage unavailable'; $('emptyMsg').hidden = false; };
