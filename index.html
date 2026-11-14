@@ -361,7 +361,7 @@ function toast(msg) {
   clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 1600);
 }
 const fmtDate = (ms) => new Date(ms).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
-const KIND_LABEL = { txt: 'Text', md: 'Markdown', docx: 'Word', odt: 'ODT', pdf: 'PDF', xlsx: 'Excel', xls: 'Excel', ods: 'ODS', csv: 'CSV' };
+const KIND_LABEL = { txt: 'Text', md: 'Markdown', docx: 'Word', odt: 'ODT', pdf: 'PDF', xlsx: 'Excel', xls: 'Excel', ods: 'ODS', csv: 'CSV', epub: 'EPUB' };
 
 /* ---------- Document list ---------- */
 async function renderList() {
@@ -421,6 +421,7 @@ const TYPE_EXT = {
   'application/vnd.ms-excel': 'xls',
   'application/vnd.oasis.opendocument.spreadsheet': 'ods',
   'text/csv': 'csv', 'text/comma-separated-values': 'csv',
+  'application/epub+zip': 'epub',
 };
 const SHEET_TYPES = {
   xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -481,7 +482,7 @@ async function importFile(file) {
   const dot = file.name.lastIndexOf('.');
   let ext = dot > 0 ? file.name.slice(dot + 1).toLowerCase() : '';
   const base = dot > 0 ? file.name.slice(0, dot) : file.name;
-  if (!['txt', 'md', 'markdown', 'docx', 'odt', 'pdf', 'xlsx', 'xls', 'ods', 'csv'].includes(ext) && TYPE_EXT[file.type]) ext = TYPE_EXT[file.type];
+  if (!['txt', 'md', 'markdown', 'docx', 'odt', 'pdf', 'xlsx', 'xls', 'ods', 'csv', 'epub'].includes(ext) && TYPE_EXT[file.type]) ext = TYPE_EXT[file.type];
   const now = Date.now();
   const doc = { id: newId(), name: base || 'Untitled', format: ext, created: now, updated: now, saved: true };
   try {
@@ -492,6 +493,11 @@ async function importFile(file) {
     } else if (ext === 'docx') {
       doc.kind = 'text';
       const { text, lost } = await readDocx(file);
+      doc.text = text;
+      doc.notice = lost;
+    } else if (ext === 'epub') {
+      doc.kind = 'text';
+      const { text, lost } = await readEpub(file);
       doc.text = text;
       doc.notice = lost;
     } else if (ext === 'odt') {
@@ -521,7 +527,7 @@ async function importFile(file) {
       doc.data = new Blob([buf], { type: SHEET_TYPES[ext] });
       doc.edits = {};
     } else {
-      await info('Can’t open “' + file.name + '”', 'This app opens .txt, .md, .docx, .odt, .pdf, .xlsx, .xls, .ods and .csv files.' + (ext === 'doc' ? '\n\nOld .doc files aren’t supported — save it as .docx first.' : ''));
+      await info('Can’t open “' + file.name + '”', 'This app opens .txt, .md, .docx, .odt, .pdf, .xlsx, .xls, .ods, .csv and .epub files.' + (ext === 'doc' ? '\n\nOld .doc files aren’t supported — save it as .docx first.' : ''));
       return null;
     }
     await dbPut(doc);
@@ -599,6 +605,78 @@ async function readDocx(file) {
   if (zip.file('word/comments.xml')) lost.push('comments');
   const notice = 'Word file: only the text was kept.' + (lost.length ? ' Removed: ' + lost.join('; ') + '.' : ' Any formatting was removed.');
   return { text: lines.join('\n'), lost: notice };
+}
+
+/* ---------- .epub reading (text only) ---------- */
+// An EPUB book is a ZIP file: META-INF/container.xml points to the book's list (the .opf file), whose
+// "spine" gives the chapters in reading order. Each chapter is a web page; we keep its text only.
+async function readEpub(file) {
+  let zip;
+  try { zip = await JSZip.loadAsync(await file.arrayBuffer()); }
+  catch { throw new Error('This .epub file seems to be damaged.'); }
+  const xmlOf = async (path) => {
+    const f = zip.file(path);
+    if (!f) return null;
+    const x = new DOMParser().parseFromString(await f.async('string'), 'application/xml');
+    return x.getElementsByTagName('parsererror').length ? null : x;
+  };
+  // Copy protection (DRM): any encrypted file that is not a font means the text can't be read.
+  const enc = await xmlOf('META-INF/encryption.xml');
+  if (enc && [...enc.getElementsByTagNameNS('*', 'CipherReference')].some((c) => !/\.(otf|ttf|woff2?)$/i.test(c.getAttribute('URI') || ''))) {
+    throw new Error('This book is copy-protected (DRM) and can’t be opened here.');
+  }
+  const container = await xmlOf('META-INF/container.xml');
+  const opfPath = container?.getElementsByTagNameNS('*', 'rootfile')[0]?.getAttribute('full-path');
+  const opf = opfPath && await xmlOf(opfPath);
+  if (!opf) throw new Error('No book contents were found in this .epub file.');
+  // Paths in the .opf are relative to its own folder.
+  const resolve = (href) => decodeURIComponent(new URL(href, 'http://book/' + opfPath).pathname.slice(1));
+  const items = new Map();
+  for (const it of opf.getElementsByTagNameNS('*', 'item')) items.set(it.getAttribute('id'), it.getAttribute('href'));
+  const spine = [...opf.getElementsByTagNameNS('*', 'itemref')].map((r) => items.get(r.getAttribute('idref'))).filter(Boolean);
+
+  const lines = [];
+  let cur = '', pics = 0, fmt = false, tables = 0;
+  const BLOCK = new Set(['p', 'div', 'section', 'article', 'aside', 'header', 'footer', 'main', 'nav', 'blockquote', 'pre', 'ul', 'ol', 'li', 'dl', 'dt', 'dd', 'figure', 'figcaption', 'table', 'tr', 'hr', 'address', 'center']);
+  const SKIP = new Set(['head', 'script', 'style', 'title', 'template']);
+  const flush = () => { const t = cur.replace(/[  ]+/g, ' ').replace(/ ?\t ?/g, '\t').trim(); if (t) lines.push(t); cur = ''; };
+  const gap = () => { flush(); if (lines.length && lines[lines.length - 1] !== '') lines.push(''); };
+  function walk(node, pre) {
+    for (const n of node.childNodes) {
+      if (n.nodeType === 3) { cur += pre ? n.data : n.data.replace(/\s+/g, ' '); continue; }
+      if (n.nodeType !== 1) continue;
+      const name = n.localName.toLowerCase();
+      if (SKIP.has(name)) continue;
+      if (name === 'img' || name === 'svg' || name === 'image') { pics++; continue; }
+      if (name === 'br') { flush(); continue; }
+      if (/^(b|strong|i|em|u|font|big|small|sup|sub)$/.test(name)) fmt = true;
+      if (/^h[1-6]$/.test(name)) { gap(); walk(n, pre); flush(); continue; } // chapter titles on their own line
+      if (name === 'td' || name === 'th') { walk(n, pre); cur += '\t'; continue; }
+      if (name === 'table') tables++;
+      if (BLOCK.has(name)) { flush(); if (name === 'li') cur += '• '; walk(n, pre || name === 'pre'); flush(); continue; }
+      walk(n, pre);
+    }
+  }
+  for (const href of spine) {
+    const f = zip.file(resolve(href));
+    if (!f) continue;
+    const src = await f.async('string');
+    let page = new DOMParser().parseFromString(src, 'application/xhtml+xml');
+    if (page.getElementsByTagName('parsererror').length) page = new DOMParser().parseFromString(src, 'text/html');
+    const body = page.getElementsByTagNameNS('*', 'body')[0] || page.body;
+    if (!body) continue;
+    gap(); // a blank line between chapters
+    walk(body, false);
+    flush();
+  }
+  while (lines.length && lines[lines.length - 1] === '') lines.pop();
+  while (lines.length && lines[0] === '') lines.shift();
+  if (!lines.length) throw new Error('No text was found in this book. It may contain only pictures.');
+  const lost = [];
+  if (fmt) lost.push('formatting (bold, italic, fonts)');
+  if (pics) lost.push(`${pics} picture(s)`);
+  if (tables) lost.push(`${tables} table(s) — their text is kept, one row per line`);
+  return { text: lines.join('\n'), lost: 'EPUB book: only the text was kept.' + (lost.length ? ' Removed: ' + lost.join('; ') + '.' : '') };
 }
 
 /* ---------- .docx writing (plain paragraphs) ---------- */
@@ -889,7 +967,7 @@ window.addEventListener('popstate', async () => {
 
 /* ---------- Export ---------- */
 function safeName(name) {
-  return (name.replace(/\.(txt|md|markdown|docx|odt|pdf|xlsx|xls|ods|csv)$/i, '').replace(/[\\/:*?"<>|]+/g, '_').trim() || 'document');
+  return (name.replace(/\.(txt|md|markdown|docx|odt|pdf|xlsx|xls|ods|csv|epub)$/i, '').replace(/[\\/:*?"<>|]+/g, '_').trim() || 'document');
 }
 function download(blob, filename) {
   const a = document.createElement('a');
@@ -2126,7 +2204,7 @@ async function receiveShared() {
 }
 
 /* ---------- Start ---------- */
-const APP_VERSION = 16; // keep in step with VERSION in sw.js
+const APP_VERSION = 17; // keep in step with VERSION in sw.js
 $('version').textContent = 'Pocket Docs · version ' + APP_VERSION;
 askPersist();
 const storageFailed = () => { $('emptyMsg').textContent = 'Storage unavailable'; $('emptyMsg').hidden = false; };

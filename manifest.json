@@ -51,6 +51,7 @@
             "application/vnd.oasis.opendocument.spreadsheet",
             "text/csv",
             "text/comma-separated-values",
+            "application/epub+zip",
             ".txt",
             ".md",
             ".docx",
@@ -59,7 +60,8 @@
             ".xlsx",
             ".xls",
             ".ods",
-            ".csv"
+            ".csv",
+            ".epub"
           ]
         }
       ]
